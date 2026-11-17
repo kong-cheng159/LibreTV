@@ -1,6 +1,6 @@
 'use client';
 
-import type { SearchResponse, SearchStreamEvent, SourceSearchOutcome, VideoDetail, DoubanResponse, BangumiCalendarResponse, AuthStatusResponse, SourceConfig, SearchResultItem, LivePlaylistResponse, LiveEpgResponse, SourceListPayload, QualityProbeItem, QualityProbeResult } from './types';
+import type { SearchResponse, SearchStreamEvent, SourceSearchOutcome, VideoDetail, DoubanResponse, BangumiCalendarResponse, AuthStatusResponse, SourceConfig, SearchResultItem, LivePlaylistResponse, LiveEpgResponse, SourceListPayload, QualityProbeItem, QualityProbeResult, CatalogListResponse, CatalogDetailResponse } from './types';
 
 /**
  * 客户端 API 封装。401 时触发全局事件打开登录框，
@@ -144,6 +144,21 @@ export const api = {
   detail: (id: string, source: SourceConfig, signal?: AbortSignal) => {
     const sp = new URLSearchParams({ id, source: JSON.stringify(source) });
     return request<VideoDetail>(`/api/detail?${sp.toString()}`, { signal });
+  },
+
+  /** 按源分类浏览（Apple CMS ac=list / ac=detail） */
+  catalog: {
+    /** 分类列表 */
+    classes: (source: SourceConfig, signal?: AbortSignal) => {
+      const sp = new URLSearchParams({ source: JSON.stringify(source) });
+      return request<CatalogListResponse>(`/api/catalog?${sp.toString()}`, { signal });
+    },
+    /** 某分类下的影片分页 */
+    detail: (source: SourceConfig, typeId: string, page = 1, signal?: AbortSignal) => {
+      const sp = new URLSearchParams({ source: JSON.stringify(source), t: typeId });
+      if (page > 1) sp.set('pg', String(page));
+      return request<CatalogDetailResponse>(`/api/catalog?${sp.toString()}`, { signal });
+    },
   },
 
   /**

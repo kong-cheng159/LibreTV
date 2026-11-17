@@ -17,6 +17,26 @@ export function cmsRequestHeaders(): Record<string, string> {
   return { ...UA_HEADERS };
 }
 
+/** 分类列表响应（ac=list）：兼容 class / list 两种字段名 */
+export function parseClassList(data: unknown): { type_id: string; type_name: string }[] {
+  if (!data || typeof data !== 'object') throw new Error('API返回的数据格式无效');
+  const root = data as Record<string, unknown>;
+  const raw = root.class ?? root.list;
+  if (raw !== null && raw !== undefined && !Array.isArray(raw)) {
+    throw new Error('API返回的数据格式无效');
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      const type_id = String(row.type_id ?? row.typeId ?? '').trim();
+      const type_name = String(row.type_name ?? row.typeName ?? '').trim();
+      if (!type_id || !type_name) return null;
+      return { type_id, type_name };
+    })
+    .filter((c): c is { type_id: string; type_name: string } => !!c);
+}
+
 /** 搜索响应 → 统一结果列表 */
 export function parseSearchList(
   data: unknown,
@@ -46,12 +66,17 @@ export function parseSearchList(
   });
 }
 
+export interface EpisodeEntry {
+  title: string;
+  url: string;
+}
+
 /**
- * 从 vod_play_url 中提取分集地址：格式 源1$$$源2，集1$URL1#集2$URL2。
+ * 从 vod_play_url 提取分集（标题 + 地址）：格式 源1$$$源2，集1$URL1#集2$URL2。
  * 部分源（如量子 lziapi、非凡 ffzy）第一条线路是网页中转页（…/share/xxx，不可播），
  * 真实 m3u8 在后面的线路里，因此优先取包含 m3u8 直链的线路；均无 m3u8 时回退第一条。
  */
-export function extractEpisodesFromPlayUrl(playUrl: string): string[] {
+export function extractEpisodeEntriesFromPlayUrl(playUrl: string): EpisodeEntry[] {
   if (!playUrl) return [];
   const groups = playUrl
     .split('$$$')
@@ -60,13 +85,51 @@ export function extractEpisodesFromPlayUrl(playUrl: string): string[] {
         .split('#')
         .map((ep) => {
           const parts = ep.split('$');
-          return parts.length > 1 ? parts[1] : '';
+          if (parts.length > 1 && (parts[1].startsWith('http://') || parts[1].startsWith('https://'))) {
+            return { title: parts[0].trim() || '', url: parts[1] };
+          }
+          return null;
         })
-        .filter((url) => url.startsWith('http://') || url.startsWith('https://'))
+        .filter((e): e is EpisodeEntry => !!e)
     )
     .filter((eps) => eps.length > 0);
   if (groups.length === 0) return [];
-  return groups.find((eps) => eps.some((url) => url.includes('.m3u8'))) ?? groups[0];
+  return groups.find((eps) => eps.some((e) => e.url.includes('.m3u8'))) ?? groups[0];
+}
+
+/** 仅地址列表（兼容旧调用） */
+export function extractEpisodesFromPlayUrl(playUrl: string): string[] {
+  return extractEpisodeEntriesFromPlayUrl(playUrl).map((e) => e.url);
+}
+
+/**
+ * 换源时对齐集数：优先同名，其次标题中的集号，最后回退下标。
+ */
+export function matchEpisodeIndex(
+  currentTitle: string | undefined,
+  currentIndex: number,
+  targetTitles: string[] | undefined,
+  targetCount: number
+): number {
+  if (targetCount <= 0) return 0;
+  const clamp = (i: number) => Math.min(Math.max(0, i), targetCount - 1);
+  if (targetTitles && targetTitles.length === targetCount && currentTitle?.trim()) {
+    const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+    const want = norm(currentTitle);
+    const exact = targetTitles.findIndex((t) => norm(t) === want);
+    if (exact >= 0) return exact;
+    const nums = currentTitle.match(/\d+/g);
+    if (nums) {
+      for (const n of nums) {
+        const byNum = targetTitles.findIndex((t) => {
+          const m = t.match(/\d+/g);
+          return m?.includes(n) ?? false;
+        });
+        if (byNum >= 0) return byNum;
+      }
+    }
+  }
+  return clamp(currentIndex);
 }
 
 /** 从简介文本中兜底提取 m3u8 链接 */
@@ -86,12 +149,16 @@ export function parseDetail(
     throw new Error('获取到的详情内容无效');
   }
   const vod = d.list[0];
-  let episodes = extractEpisodesFromPlayUrl(String(vod.vod_play_url ?? ''));
+  const entries = extractEpisodeEntriesFromPlayUrl(String(vod.vod_play_url ?? ''));
+  let episodes = entries.map((e) => e.url);
+  let episodeTitles = entries.map((e, i) => e.title || `第${i + 1}集`);
   if (episodes.length === 0) {
     episodes = extractM3u8FromText(String(vod.vod_content ?? ''));
+    episodeTitles = episodes.map((_, i) => `第${i + 1}集`);
   }
   return {
     episodes,
+    episodeTitles,
     videoInfo: {
       title: str(vod.vod_name),
       cover: str(vod.vod_pic),
@@ -140,6 +207,7 @@ export function parseDetailPageHtml(
 
   return {
     episodes,
+    episodeTitles: episodes.map((_, i) => `第${i + 1}集`),
     videoInfo: {
       title: titleMatch ? titleMatch[1].trim() : undefined,
       desc: descMatch ? descMatch[1].replace(/<[^>]+>/g, ' ').trim() : undefined,

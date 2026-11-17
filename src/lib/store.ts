@@ -115,6 +115,18 @@ export interface LiveSubscription {
   fromSubscriptions: string[];
 }
 
+/** 点播追剧条目（按 sourceKey + vodId 唯一） */
+export interface WatchlistEntry {
+  id: string;
+  sourceKey: string;
+  vodId: string;
+  title: string;
+  pic?: string;
+  sourceUrl?: string;
+  totalEpisodes?: number;
+  addedAt: number;
+}
+
 /** 直播最近观看条目（上限 20 条，按 url 去重） */
 export interface LiveRecentEntry {
   url: string;
@@ -128,6 +140,9 @@ export interface LiveRecentEntry {
   sourceUrl?: string;
   timestamp: number;
 }
+
+/** 上次观看的直播频道（进入 /live 无 URL 时用于自动恢复） */
+export type LiveLastChannel = Omit<LiveRecentEntry, 'timestamp' | 'logo'>;
 
 /** 测活结果有效期：6 小时内直接复用，过期后重新探测 */
 export const LIVE_PROBE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -220,8 +235,12 @@ interface AppState extends AppSettings {
   liveSelectedUrls: string[];
   /** 收藏频道（按流 URL 唯一标识） */
   liveFavorites: string[];
+  /** 点播追剧列表 */
+  watchlist: WatchlistEntry[];
   /** 最近观看频道（上限 20） */
   liveRecent: LiveRecentEntry[];
+  /** 上次选中并成功播放的频道 */
+  liveLastChannel?: LiveLastChannel;
   /** 测活结果缓存（6 小时有效，跨会话持久化） */
   liveProbeResults: Record<string, LiveProbeEntry>;
   /** 点播源健康度（随搜索滚动更新，跨会话持久化） */
@@ -269,6 +288,9 @@ interface AppState extends AppSettings {
   /** 批量启停直播源：一次 set 完成，避免逐条 toggle 的 O(n) 次持久化 */
   toggleLiveSelectedMany: (urls: string[]) => void;
   toggleLiveFavorite: (channelUrl: string) => void;
+  /** 追剧 / 取消追剧（已存在则移除，否则插入列表头部） */
+  toggleWatchlist: (entry: Omit<WatchlistEntry, 'id' | 'addedAt'> & { id?: string }) => void;
+  removeWatchlist: (id: string) => void;
   addLiveRecent: (entry: Omit<LiveRecentEntry, 'timestamp'>) => void;
   /** 删除单条最近观看（按流 URL） */
   removeLiveRecent: (channelUrl: string) => void;
@@ -337,7 +359,9 @@ export const useAppStore = create<AppState>()(
       liveSubscriptions: [],
       liveSelectedUrls: [],
       liveFavorites: [],
+      watchlist: [],
       liveRecent: [],
+      liveLastChannel: undefined,
       liveProbeResults: {},
       sourceHealth: {},
       qualityMap: {},
@@ -460,6 +484,10 @@ export const useAppStore = create<AppState>()(
           liveSelectedUrls: get().liveSelectedUrls.filter((u) => !orphanUrls.has(u)),
           // 收藏的频道是用户主动留下的，删除订阅时保留；其余残留状态一并清理
           liveRecent: get().liveRecent.filter((r) => !r.sourceUrl || !orphanUrls.has(r.sourceUrl)),
+          liveLastChannel: (() => {
+            const last = get().liveLastChannel;
+            return last?.sourceUrl && orphanUrls.has(last.sourceUrl) ? undefined : last;
+          })(),
         });
       },
 
@@ -594,6 +622,10 @@ export const useAppStore = create<AppState>()(
             ]),
           ],
           liveRecent: get().liveRecent.filter((r) => !r.sourceUrl || !orphanUrls.has(r.sourceUrl)),
+          liveLastChannel: (() => {
+            const last = get().liveLastChannel;
+            return last?.sourceUrl && orphanUrls.has(last.sourceUrl) ? undefined : last;
+          })(),
         });
         // 返回本订阅实际持有的引用数（与订阅条目的「直播 N」计数口径一致）
         return [...nextByUrl.values()].filter((s) => s.fromSubscriptions.includes(subUrl)).length;
@@ -690,9 +722,37 @@ export const useAppStore = create<AppState>()(
         });
       },
 
+      toggleWatchlist: (entry) => {
+        const id = entry.id ?? `${entry.sourceKey}_${entry.vodId}`;
+        const cur = get().watchlist;
+        if (cur.some((w) => w.id === id)) {
+          set({ watchlist: cur.filter((w) => w.id !== id) });
+          return;
+        }
+        const next: WatchlistEntry = {
+          id,
+          sourceKey: entry.sourceKey,
+          vodId: entry.vodId,
+          title: entry.title,
+          pic: entry.pic,
+          sourceUrl: entry.sourceUrl,
+          totalEpisodes: entry.totalEpisodes,
+          addedAt: Date.now(),
+        };
+        set({ watchlist: [next, ...cur] });
+      },
+
+      removeWatchlist: (id) => {
+        set({ watchlist: get().watchlist.filter((w) => w.id !== id) });
+      },
+
       addLiveRecent: (entry) => {
         const rest = get().liveRecent.filter((r) => r.url !== entry.url);
-        set({ liveRecent: [{ ...entry, timestamp: Date.now() }, ...rest].slice(0, 20) });
+        const { logo: _logo, ...last } = entry;
+        set({
+          liveRecent: [{ ...entry, timestamp: Date.now() }, ...rest].slice(0, 20),
+          liveLastChannel: last,
+        });
       },
 
       removeLiveRecent: (channelUrl) => {
@@ -871,12 +931,19 @@ export const useAppStore = create<AppState>()(
       // v7：片尾结束也并入同一开关（不再单独提供 autoSkipOutro）。
       // v8：订阅新增 refreshDays / failStreak——两者都缺省即「纯手动 + 无失败记录」，
       //     与旧行为完全一致，因此无需改写存量数据，仅借版本号让 migrate 跑一遍。
+      // v9：点播追剧 watchlist。
+      // v10：直播上次观看频道 liveLastChannel。
       // 此前未声明 version 的存量数据会被视为 v0 并走 migrate 补齐。
-      version: 8,
+      version: 10,
       migrate: (persisted, version) => {
         const state = { ...((persisted ?? {}) as Partial<AppState>) };
         if (!Array.isArray(state.liveRecent)) state.liveRecent = [];
+        if (!state.liveLastChannel && state.liveRecent?.[0]) {
+          const { logo: _l, timestamp: _t, ...last } = state.liveRecent[0];
+          state.liveLastChannel = last;
+        }
         if (!Array.isArray(state.liveSubscriptions)) state.liveSubscriptions = [];
+        if (!Array.isArray(state.watchlist)) state.watchlist = [];
 
         // v3 的片头/片尾双标记 → v4 的 segments（纯函数，脏数据在内部丢弃）
         state.skipMarks = migrateSkipMarks(
@@ -940,7 +1007,9 @@ export const useAppStore = create<AppState>()(
         liveSubscriptions: s.liveSubscriptions,
         liveSelectedUrls: s.liveSelectedUrls,
         liveFavorites: s.liveFavorites,
+        watchlist: s.watchlist,
         liveRecent: s.liveRecent,
+        liveLastChannel: s.liveLastChannel,
         sourceHealth: s.sourceHealth,
         qualityMap: s.qualityMap,
         envSubsSeen: s.envSubsSeen,
@@ -1073,4 +1142,14 @@ export function isInDisabledSubscription(
   return state.subscriptions.some(
     (s) => s.enabled === false && keyBelongsToSubscription(key, subKeyPrefix(s.url))
   );
+}
+
+/** 指定影片是否在追剧列表中 */
+export function isInWatchlist(
+  state: Pick<AppState, 'watchlist'>,
+  sourceKey: string,
+  vodId: string
+): boolean {
+  const id = `${sourceKey}_${vodId}`;
+  return state.watchlist.some((w) => w.id === id);
 }

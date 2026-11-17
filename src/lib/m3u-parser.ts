@@ -104,6 +104,8 @@ export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
     const tvgId = attrs['tvg-id'] || undefined;
     const logo = attrs['tvg-logo'] ? normalizeStreamUrl(attrs['tvg-logo'], baseUrl) : undefined;
     const name = cur?.title || nameFromUrl(url);
+    const chnoRaw = attrs['tvg-chno'];
+    const channelNo = chnoRaw ? parseInt(chnoRaw, 10) : undefined;
     channels.push({
       id: tvgId || stableId(url),
       name,
@@ -112,6 +114,7 @@ export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
       group: attrs['group-title'] || cur?.extGroup || undefined,
       tvgId,
       rawName: attrs['tvg-name'] || undefined,
+      channelNo: Number.isFinite(channelNo) && channelNo! > 0 ? channelNo : undefined,
     });
   }
 

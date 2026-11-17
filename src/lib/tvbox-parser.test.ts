@@ -211,6 +211,16 @@ describe('parseSubscriptionPayload', () => {
     expect(() => parseSubscriptionPayload({ name: '空的' })).toThrow(/格式不正确/);
     expect(() => parseSubscriptionPayload(null)).toThrow(/格式不正确/);
   });
+
+  it('采集站接口返回（list/vod_id）给出明确提示，避免误当源列表', () => {
+    expect(() =>
+      parseSubscriptionPayload({
+        code: 1,
+        list: [{ vod_id: 1, vod_name: '示例' }],
+        class: [{ type_id: 1, type_name: '电影' }],
+      })
+    ).toThrow(/采集站接口返回/);
+  });
 });
 
 describe('接口目录（source-catalog）', () => {

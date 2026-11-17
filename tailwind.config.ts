@@ -9,6 +9,13 @@ const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['var(--font-sans)', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        display: ['var(--font-display)', 'var(--font-sans)', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+      },
+      maxWidth: {
+        shell: '80rem',
+      },
       colors: {
         page: 'rgb(var(--c-page) / <alpha-value>)',
         surface: {
@@ -49,10 +56,15 @@ const config: Config = {
           from: { opacity: '0', transform: 'translateY(8px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
+        'reveal-up': {
+          from: { opacity: '0', transform: 'translateY(14px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.2s ease-out',
         'slide-up': 'slide-up 0.25s ease-out',
+        'reveal-up': 'reveal-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both',
       },
     },
   },

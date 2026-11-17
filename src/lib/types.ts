@@ -42,6 +42,8 @@ export interface VideoInfo {
 
 export interface VideoDetail {
   episodes: string[];
+  /** 与 episodes 等长的集标题（来自 vod_play_url 的「第N集$name」）；缺失时按集号展示 */
+  episodeTitles?: string[];
   videoInfo: VideoInfo;
 }
 
@@ -165,6 +167,24 @@ export interface LiveChannel {
   tvgId?: string;
   /** M3U 的 tvg-name 属性（原始台名） */
   rawName?: string;
+  /** M3U 的 tvg-chno（频道号，数字键切台时优先按号匹配） */
+  channelNo?: number;
+}
+
+/** Apple CMS 分类项（ac=list） */
+export interface CatalogClass {
+  type_id: string;
+  type_name: string;
+}
+
+export interface CatalogListResponse {
+  classes: CatalogClass[];
+}
+
+export interface CatalogDetailResponse {
+  items: SearchResultItem[];
+  page: number;
+  pagecount: number;
 }
 
 export interface LivePlaylistResponse {

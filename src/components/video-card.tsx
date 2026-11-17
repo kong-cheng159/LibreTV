@@ -331,22 +331,44 @@ export function AggregatedCard({
   );
 }
 
-/** 影片卡片：封面加载失败时逐级降级到占位图（未聚合的单一结果使用） */
-export function VideoCard({ item, onClick }: { item: SearchResultItem; onClick: () => void }) {
+/** 影片卡片：封面加载失败时逐级降级到占位图；进入视口后探测画质 */
+export function VideoCard({
+  item,
+  onClick,
+  sources,
+}: {
+  item: SearchResultItem;
+  onClick: () => void;
+  /** 传入已勾选源配置后才会探测清晰度 */
+  sources?: SourceConfig[];
+}) {
   const imageProxyMode = useAppStore((s) => s.imageProxyMode);
   const customImageProxy = useAppStore((s) => s.customImageProxy);
   const [imgFailed, setImgFailed] = useState(false);
   const showImg = !!item.pic && !imgFailed;
+  const qKey = qualityKey(item.sourceKey, item.vodId);
+  const { qualities, probing, prime, probeQueued, retry } = useQualityProbe(sources);
+  const { ref: inViewRef, inView } = useInView<HTMLDivElement>(true);
+
+  useEffect(() => {
+    prime([item]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.sourceKey, item.vodId]);
+
+  useEffect(() => {
+    if (inView) probeQueued([item]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inView, item.sourceKey, item.vodId]);
 
   return (
     <div
+      ref={inViewRef}
       className="card cursor-pointer hover:scale-[1.02] hover:shadow-md h-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       role="button"
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
-          // 阻止空格触发页面滚动（AggregatedCard 已是此写法，此处对齐）
           e.preventDefault();
           onClick();
         }
@@ -375,9 +397,18 @@ export function VideoCard({ item, onClick }: { item: SearchResultItem; onClick: 
 
         <div className="p-2.5 flex flex-col flex-grow min-w-0">
           <div className="flex-grow">
-            <h3 className="font-semibold text-sm text-content mb-1.5 line-clamp-2" title={item.name}>
-              {item.name}
-            </h3>
+            <div className="flex items-start justify-between gap-2 mb-1.5">
+              <h3 className="font-semibold text-sm text-content line-clamp-2 min-w-0" title={item.name}>
+                {item.name}
+              </h3>
+              <QualityBadge
+                variant="overlay"
+                entry={qualities[qKey]}
+                loading={probing[qKey]}
+                onRetry={() => retry([item])}
+                className="shrink-0 mt-0.5"
+              />
+            </div>
             <div className="flex flex-wrap gap-1 mb-1.5">
               {item.typeName && <span className="tag bg-accent/15 text-accent">{item.typeName}</span>}
               {item.year && <span className="tag bg-purple-500/15 text-purple-600 dark:text-purple-300">{item.year}</span>}
@@ -393,7 +424,7 @@ export function VideoCard({ item, onClick }: { item: SearchResultItem; onClick: 
   );
 }
 
-/** 豆瓣推荐卡片（无来源徽章，点击直接搜索） */
+/** 豆瓣推荐卡片（无来源徽章，点击直接搜索）；对齐最新海报卡样式 */
 export function DoubanCard({ item, onClick }: { item: { title: string; cover: string; rating?: string }; onClick: () => void }) {
   const imageProxyMode = useAppStore((s) => s.imageProxyMode);
   const customImageProxy = useAppStore((s) => s.customImageProxy);
@@ -402,26 +433,25 @@ export function DoubanCard({ item, onClick }: { item: { title: string; cover: st
 
   return (
     <div
-      className="card cursor-pointer hover:scale-[1.03] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      className="movie-item group cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-xl"
       role="button"
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
-          // 阻止空格触发页面滚动（AggregatedCard 已是此写法，此处对齐）
           e.preventDefault();
           onClick();
         }
       }}
     >
-      <div className="relative aspect-[2/3] bg-chip">
+      <div className="poster-card-frame">
         {item.cover && !imgFailed ? (
           <SmartImage
             url={item.cover}
             mode={imageProxyMode}
             customProxy={customImageProxy}
             alt={item.title}
-            className="w-full h-full object-cover"
+            className="poster-artwork"
             onExhausted={() => setImgFailed(true)}
           />
         ) : (
@@ -432,13 +462,20 @@ export function DoubanCard({ item, onClick }: { item: { title: string; cover: st
           </div>
         )}
         {item.rating && (
-          <span className={cn('absolute top-1.5 right-1.5 tag bg-black/70 text-rating font-medium')}>
+          <span className="rating-pill">
             ★ {item.rating}
           </span>
         )}
+        <div className="play-overlay" aria-hidden>
+          <div className="play-circle">
+            <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7L8 5z" />
+            </svg>
+          </div>
+        </div>
       </div>
-      <div className="p-2">
-        <div className="text-xs font-medium text-content truncate" title={item.title}>
+      <div className="pt-2.5 px-0.5">
+        <div className="text-[13px] font-medium text-content line-clamp-2 leading-snug" title={item.title}>
           {item.title}
         </div>
       </div>

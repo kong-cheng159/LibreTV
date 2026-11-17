@@ -15,6 +15,8 @@ import { CONTROL_SHOW_CLASS, syncMiniProgressBar } from '@/lib/mini-progress-bar
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
+import { seekTimeFromClientX } from '@/lib/progress-seek';
+import { Icon } from '@/components/icon';
 import {
   findActiveSegment,
   findCrossedEnding,
@@ -145,9 +147,77 @@ export function PlayerShell({
   const volumeBoostRef = useRef<VolumeBoostHandle | null>(null);
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
+  /** 手势进行中：画面中央大字号反馈（与顶部 showHint 分流，避免被 timeupdate 顶掉） */
+  const [gestureOverlay, setGestureOverlay] = useState('');
   // 起播前的品牌占位图（沿用旧版 nomedia 素材），实际开始播放后隐藏
   const [showPoster, setShowPoster] = useState(true);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 播放中卡顿缓冲（起播占位图阶段不叠这层，避免双遮罩） */
+  const [buffering, setBuffering] = useState(false);
+  /** 缓冲超过约 4s：露出换源入口 */
+  const [bufferingLong, setBufferingLong] = useState(false);
+  const bufferingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 续播定位提示：可点「从头播放」 */
+  const [resumeOffer, setResumeOffer] = useState<number | null>(null);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+  const ASPECT_MODES = ['default', 'cover', '16:9', '4:3'] as const;
+  type AspectMode = (typeof ASPECT_MODES)[number];
+  const ASPECT_LABELS: Record<AspectMode, string> = {
+    default: '默认',
+    cover: '铺满',
+    '16:9': '16:9',
+    '4:3': '4:3',
+  };
+  const GESTURE_THRESHOLD_PX = 14;
+
+  const sleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sleepUntilEndRef = useRef(false);
+  const brightnessRef = useRef(1);
+  const aspectModeRef = useRef<AspectMode>('default');
+
+  const clearBuffering = () => {
+    setBuffering(false);
+    setBufferingLong(false);
+    if (bufferingTimerRef.current) {
+      clearTimeout(bufferingTimerRef.current);
+      bufferingTimerRef.current = null;
+    }
+  };
+
+  const markBuffering = () => {
+    setBuffering(true);
+    if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+    bufferingTimerRef.current = setTimeout(() => setBufferingLong(true), 4000);
+  };
+
+  const dismissResumeOffer = () => {
+    setResumeOffer(null);
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
+  };
+
+  const offerResume = (seconds: number) => {
+    setResumeOffer(seconds);
+    if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = setTimeout(() => setResumeOffer(null), 10_000);
+  };
+
+  const syncRateControl = (art: Artplayer, rate: number) => {
+    const label = Number.isInteger(rate) ? `${rate}.0x` : `${rate}x`;
+    try {
+      art.controls?.update({
+        name: 'playback-rate',
+        html: label,
+        tooltip: `播放速度 ${label}（点击切换）`,
+      });
+    } catch {
+      /* 控件尚未就绪时忽略 */
+    }
+  };
 
   // 始终持有最新 props/回调，避免重建播放器
   const propsRef = useRef({
@@ -206,6 +276,160 @@ export function PlayerShell({
     setHint(text);
     if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
     hintTimerRef.current = setTimeout(() => setHint(''), 2500);
+  };
+
+  const clearSleepTimer = () => {
+    if (sleepTimerRef.current) {
+      clearTimeout(sleepTimerRef.current);
+      sleepTimerRef.current = null;
+    }
+    sleepUntilEndRef.current = false;
+    try {
+      artRef.current?.setting?.update?.({ name: 'sleep-timer', tooltip: '关闭' });
+    } catch {
+      /* 控件尚未就绪 */
+    }
+  };
+
+  const armSleepTimer = (minutes: number) => {
+    clearSleepTimer();
+    if (minutes <= 0) return;
+    sleepTimerRef.current = setTimeout(() => {
+      sleepTimerRef.current = null;
+      try {
+        artRef.current?.pause();
+      } catch {
+        /* 忽略 */
+      }
+      showHint('定时关闭');
+    }, minutes * 60_000);
+    try {
+      artRef.current?.setting?.update?.({ name: 'sleep-timer', tooltip: `${minutes} 分钟` });
+    } catch {
+      /* 忽略 */
+    }
+  };
+
+  /** 画面比例：video objectFit + 容器 aspect-ratio，不依赖 ArtPlayer 内置比例（直播/点播行为不一致） */
+  const applyAspectMode = (art: Artplayer, mode: AspectMode) => {
+    const video = art.video as HTMLVideoElement | undefined;
+    const videoWrap = art.template?.$video as HTMLElement | undefined;
+    if (!video) return;
+    video.style.objectFit = '';
+    video.style.width = '';
+    video.style.height = '';
+    if (videoWrap) {
+      videoWrap.style.aspectRatio = '';
+      videoWrap.style.width = '';
+      videoWrap.style.height = '';
+      videoWrap.style.margin = '';
+      const filter = brightnessRef.current !== 1 ? `brightness(${brightnessRef.current})` : '';
+      videoWrap.style.filter = filter;
+    }
+    switch (mode) {
+      case 'default':
+        video.style.objectFit = 'contain';
+        break;
+      case 'cover':
+        video.style.objectFit = 'cover';
+        break;
+      case '16:9':
+        if (videoWrap) {
+          videoWrap.style.aspectRatio = '16 / 9';
+          videoWrap.style.width = '100%';
+          videoWrap.style.margin = '0 auto';
+        }
+        video.style.objectFit = 'contain';
+        video.style.width = '100%';
+        video.style.height = '100%';
+        break;
+      case '4:3':
+        if (videoWrap) {
+          videoWrap.style.aspectRatio = '4 / 3';
+          videoWrap.style.width = '100%';
+          videoWrap.style.margin = '0 auto';
+        }
+        video.style.objectFit = 'contain';
+        video.style.width = '100%';
+        video.style.height = '100%';
+        break;
+    }
+    aspectModeRef.current = mode;
+  };
+
+  const syncAspectControl = (art: Artplayer, mode: AspectMode) => {
+    const label = ASPECT_LABELS[mode];
+    try {
+      art.controls?.update({
+        name: 'aspect-ratio',
+        html: label,
+        tooltip: `画面比例 ${label}（点击切换）`,
+      });
+    } catch {
+      /* 忽略 */
+    }
+  };
+
+  /** 多码率 HLS：在设置抽屉挂清晰度；单码率时移除避免空菜单 */
+  const updateHlsQualitySetting = (hls: Hls) => {
+    const art = artRef.current;
+    if (!art?.setting) return;
+    const levels = hls.levels;
+    if (levels.length <= 1) {
+      try {
+        art.setting.remove('hls-quality');
+      } catch {
+        /* 尚未添加 */
+      }
+      return;
+    }
+    const buildSelector = () => {
+      const cur = hls.currentLevel;
+      return [
+        { html: '自动', value: -1, default: cur === -1 },
+        ...levels.map((level, index) => ({
+          html: level.height ? `${level.height}P` : `档位 ${index + 1}`,
+          value: index,
+          default: cur === index,
+        })),
+      ];
+    };
+    const tooltipForLevel = (levelIndex: number) => {
+      if (levelIndex === -1) return '自动';
+      const level = levels[levelIndex];
+      return level?.height ? `${level.height}P` : `档位 ${levelIndex + 1}`;
+    };
+    const option = {
+      name: 'hls-quality',
+      html: '清晰度',
+      width: 150,
+      tooltip: tooltipForLevel(hls.currentLevel),
+      selector: buildSelector(),
+      onSelect(this: Artplayer, item: { html: string | HTMLElement; value?: number }) {
+        const level = typeof item.value === 'number' ? item.value : -1;
+        const h = hlsRef.current;
+        if (!h) return typeof item.html === 'string' ? item.html : '自动';
+        h.currentLevel = level;
+        h.nextLevel = level;
+        const label = tooltipForLevel(level);
+        showHint(`清晰度 ${label}`);
+        try {
+          this.setting.update({
+            name: 'hls-quality',
+            tooltip: label,
+            selector: buildSelector(),
+          });
+        } catch {
+          /* 忽略 */
+        }
+        return label;
+      },
+    };
+    try {
+      art.setting.update(option);
+    } catch {
+      art.setting.add(option);
+    }
   };
 
   // 片段缓存开启时调大 hls.js 自身缓冲，缓冲之外的空窗由预取器补齐
@@ -384,7 +608,7 @@ export function PlayerShell({
         if (saved > 10 && Number.isFinite(currentDuration) && saved < currentDuration - 2) {
           if (artRef.current) artRef.current.currentTime = saved;
           prefetchAnchor = saved;
-          showHint(`已从 ${formatTime(saved)} 继续播放`);
+          offerResume(saved);
         }
         restoredRef.current = true;
         restoreCleanupRef.current?.();
@@ -415,8 +639,12 @@ export function PlayerShell({
         .map((level) => level.height)
         .filter((h): h is number => typeof h === 'number' && h > 0);
       if (heights.length > 0) reportQuality(Math.max(...heights));
+      updateHlsQualitySetting(hls);
       // 进度恢复改由 restoreAndStart 处理：duration 未就绪时不消费标记，挂事件重试
       void restoreAndStart();
+    });
+    hls.on(Hls.Events.LEVEL_SWITCHED, () => {
+      updateHlsQualitySetting(hls);
     });
     // 播放链路恢复（FRAG_LOADED / MANIFEST_PARSED）：静默窗外清零连续失败计数
     hls.on(Hls.Events.FRAG_LOADED, () => recoveryRef.current?.markHealthy());
@@ -480,6 +708,7 @@ export function PlayerShell({
   /** 换集：重置每集状态并切换到新 HLS 源（不重建 ArtPlayer）。 */
   const loadEpisode = (targetUrl: string) => {
     if (!targetUrl) return;
+    clearSleepTimer();
     mediaHealthyRef.current = true;
     playbackStartedRef.current = false;
     videoErrorRetryUsedRef.current = false;
@@ -492,6 +721,8 @@ export function PlayerShell({
     endedRef.current = false;
     updateSkipPrompt(null);
     setUndoSkip(null);
+    dismissResumeOffer();
+    clearBuffering();
     recoveryRef.current = new PlaybackRecovery();
     // 换集时清掉上一集的预取窗口，避免带宽被旧集占用
     getVideoPrefetcher().stop();
@@ -531,14 +762,15 @@ export function PlayerShell({
       type: 'm3u8',
       volume: 0.8,
       autoplay: true,
+      // 对齐点播：开启画中画；截图/AirPlay/网页全屏仍关闭；倍速进设置 + 控制条轮换
       pip: true,
       autoMini: true,
-      screenshot: true,
+      screenshot: false,
       setting: true,
-      playbackRate: true,
-      aspectRatio: true,
+      playbackRate: false,
+      aspectRatio: false,
       fullscreen: true,
-      fullscreenWeb: true,
+      fullscreenWeb: false,
       // 恒传 true，不跟设置项走：库的 miniProgressBar 插件只在构造时注册、运行时不可换，
       // 而它正是「控制栏显示时摘掉 art-mini-progress-bar」的唯一维护者。设置项只负责
       // 「关掉时不保留类名」（见下方 control 监听 + 开关变化的 useEffect）。
@@ -548,12 +780,62 @@ export function PlayerShell({
       mutex: true,
       backdrop: true,
       playsInline: true,
-      airplay: true,
+      airplay: false,
       hotkey: false,
       theme: '#2563eb',
       lang: navigator.language.toLowerCase().startsWith('zh') ? 'zh-cn' : 'en',
       moreVideoAttr: { crossOrigin: 'anonymous', playsInline: true },
+      // 关掉独立倍速按钮后，在设置抽屉里显式挂一档速率（对齐「设置里改倍速」）
+      settings: [
+        {
+          html: '播放速度',
+          width: 150,
+          tooltip: '1.0x',
+          selector: [
+            { html: '0.5x', value: 0.5 },
+            { html: '0.75x', value: 0.75 },
+            { html: '1.0x', value: 1, default: true },
+            { html: '1.25x', value: 1.25 },
+            { html: '1.5x', value: 1.5 },
+            { html: '1.75x', value: 1.75 },
+            { html: '2.0x', value: 2 },
+          ],
+          onSelect(this: Artplayer, item: { html: string | HTMLElement; value?: number }) {
+            if (typeof item.value === 'number') this.playbackRate = item.value as 0.5 | 0.75 | 1.0 | 1.25 | 1.5 | 1.75 | 2.0;
+            return typeof item.html === 'string' ? item.html : '1.0x';
+          },
+        },
+        {
+          name: 'sleep-timer',
+          html: '定时关闭',
+          width: 150,
+          tooltip: '关闭',
+          selector: [
+            { html: '关闭', value: 0, default: true },
+            { html: '15 分钟', value: 15 },
+            { html: '30 分钟', value: 30 },
+            { html: '60 分钟', value: 60 },
+            { html: '播完本集', value: -1 },
+          ],
+          onSelect(item: { html: string | HTMLElement; value?: number }) {
+            const v = item.value ?? 0;
+            clearSleepTimer();
+            if (v === -1) {
+              sleepUntilEndRef.current = true;
+              showHint('播完本集后关闭');
+              return '播完本集';
+            }
+            if (v > 0) {
+              armSleepTimer(v);
+              showHint(`${v} 分钟后关闭`);
+              return `${v} 分钟`;
+            }
+            return '关闭';
+          },
+        },
+      ],
       // 上/下集放在播放键右侧：换集是看剧最高频的动作，不该让用户滚回页面下方找按钮
+      // 倍速常驻右侧：设置抽屉里仍可精细选，控制条点一下轮换常用档
       controls: [
         {
           name: 'prev-episode',
@@ -575,6 +857,38 @@ export function PlayerShell({
             if (propsRef.current.hasNextEpisode) propsRef.current.onNextEpisode?.();
           },
         },
+        {
+          name: 'playback-rate',
+          index: 20,
+          position: 'right',
+          html: '1.0x',
+          tooltip: '播放速度 1.0x（点击切换）',
+          style: { padding: '0 8px', fontSize: '13px', fontVariantNumeric: 'tabular-nums' },
+          click: function (this: Artplayer) {
+            const rates = PLAYBACK_RATES;
+            const cur = this.playbackRate || 1;
+            const idx = rates.findIndex((r) => Math.abs(r - cur) < 0.01);
+            const next = rates[(idx + 1) % rates.length] ?? 1;
+            this.playbackRate = next;
+            syncRateControl(this, next);
+            showHint(`${Number.isInteger(next) ? `${next}.0` : next}x`);
+          },
+        },
+        {
+          name: 'aspect-ratio',
+          index: 21,
+          position: 'right',
+          html: '默认',
+          tooltip: '画面比例 默认（点击切换）',
+          style: { padding: '0 8px', fontSize: '13px' },
+          click: function (this: Artplayer) {
+            const idx = ASPECT_MODES.indexOf(aspectModeRef.current);
+            const next = ASPECT_MODES[(idx + 1) % ASPECT_MODES.length] ?? 'default';
+            applyAspectMode(this, next);
+            syncAspectControl(this, next);
+            showHint(`画面 ${ASPECT_LABELS[next]}`);
+          },
+        },
       ],
       customType: {
         m3u8: (video: HTMLVideoElement, mediaUrl: string) => {
@@ -583,6 +897,7 @@ export function PlayerShell({
       },
     });
     artRef.current = art;
+    applyAspectMode(art, aspectModeRef.current);
 
     // 音量放大：起播后（src 已就绪）才挂 Web Audio 增益图，避免空 src / CORS 误判。
     // 默认关闭（设置项 volumeBoost）：不接入时完全不碰音频链路。
@@ -629,6 +944,9 @@ export function PlayerShell({
       const video = art.video;
       if (video && video.playbackRate !== video.defaultPlaybackRate) {
         video.defaultPlaybackRate = video.playbackRate;
+      }
+      if (video && Number.isFinite(video.playbackRate)) {
+        syncRateControl(art, video.playbackRate);
       }
     });
 
@@ -687,13 +1005,18 @@ export function PlayerShell({
     art.on('video:playing', () => {
       playbackStartedRef.current = true;
       setShowPoster(false);
+      clearBuffering();
       // 仅在媒体真正恢复（有分片进入 buffer）后清错误遮罩：
       // 否则「视频轨挂了、音频轨先播出来」时会清掉遮罩，留下黑屏假死态
       if (mediaHealthyRef.current) setError('');
       reportVideoHeight();
     });
+    art.on('video:canplay', () => {
+      clearBuffering();
+    });
     art.on('video:error', () => {
       mediaHealthyRef.current = false;
+      clearBuffering();
       // 起播阶段的 video 元素级错误（MSE/解码偶发失败）：重建一次播放链路自愈，
       // 而不是直接钉死错误遮罩——重建后视频轨重新 append，黑屏有声即可解除
       if (!playbackStartedRef.current && !videoErrorRetryUsedRef.current) {
@@ -787,13 +1110,18 @@ export function PlayerShell({
       ensurePrefetch(currentMediaUrlRef.current, art.currentTime, 0);
     });
     art.on('video:waiting', () => {
-      // 卡顿：预取临时让出带宽给播放
+      // 卡顿：预取临时让出带宽给播放；起播占位阶段不叠缓冲条
       getVideoPrefetcher().setThrottled(true);
+      if (playbackStartedRef.current) markBuffering();
     });
     art.on('video:playing', () => {
       getVideoPrefetcher().setThrottled(false);
     });
     art.on('video:ended', () => {
+      if (sleepUntilEndRef.current) {
+        sleepUntilEndRef.current = false;
+        showHint('定时关闭');
+      }
       // finishBySkip 已经手动走过结束链路：这里不能重复触发 onEnded
       if (endedRef.current) return;
       endedRef.current = true;
@@ -880,33 +1208,130 @@ export function PlayerShell({
 
     // 全屏时播放器覆盖整个视口，无法依赖 mouseleave 判断“移出播放器”。
     // 改为按鼠标活动计时：停止移动后快速收起控制栏，移动时立即显示。
+    // 悬停在底栏/设置时不得收起——否则对准进度条停住点击时，条会在手下消失导致点空。
     let controlHideTimer: ReturnType<typeof setTimeout> | null = null;
-    const showControlsOnPointerMove = () => {
-      art.controls.show = true;
+    let hoveringChrome = false;
+    let scrubbingProgress = false;
+    const scheduleControlHide = () => {
       if (controlHideTimer) clearTimeout(controlHideTimer);
       controlHideTimer = setTimeout(() => {
-        if (!art.setting.show) art.controls.show = false;
-      }, 800);
+        if (!art.setting.show && !hoveringChrome && !scrubbingProgress) {
+          art.controls.show = false;
+        }
+      }, DESKTOP_CONTROL_HIDE_MS);
+    };
+    const showControlsOnPointerMove = () => {
+      art.controls.show = true;
+      if (hoveringChrome || scrubbingProgress || art.setting.show) {
+        if (controlHideTimer) {
+          clearTimeout(controlHideTimer);
+          controlHideTimer = null;
+        }
+        return;
+      }
+      scheduleControlHide();
     };
     const hideControlsOnMouseLeave = () => {
+      hoveringChrome = false;
       if (controlHideTimer) clearTimeout(controlHideTimer);
       controlHideTimer = null;
-      art.controls.show = false;
+      if (!scrubbingProgress) art.controls.show = false;
+    };
+    const onChromeEnter = () => {
+      hoveringChrome = true;
+      art.controls.show = true;
+      if (controlHideTimer) {
+        clearTimeout(controlHideTimer);
+        controlHideTimer = null;
+      }
+    };
+    const onChromeLeave = () => {
+      hoveringChrome = false;
+      scheduleControlHide();
     };
     // 触屏不监听 mousemove/mouseleave，也跳过初始显示：iOS 点按视频的合成事件
     // 序列是 mousemove → click，若 mousemove 先把 show 置 true，紧跟的 ArtPlayer
     // click toggle 会把它翻回 false——控制栏「闪一下即隐」，正是 issue #937 的病灶
+    const bottomEl = art.template?.$bottom as HTMLElement | undefined;
     if (!touchPointer) {
       el?.addEventListener('mousemove', showControlsOnPointerMove);
       el?.addEventListener('mouseleave', hideControlsOnMouseLeave);
+      bottomEl?.addEventListener('mouseenter', onChromeEnter);
+      bottomEl?.addEventListener('mouseleave', onChromeLeave);
       showControlsOnPointerMove();
     }
+
+    // 自管进度条定位：补上 ArtPlayer 在 isMobile 下不挂 click、以及桌面点在圆点上被忽略的缺口。
+    const progressEl = art.template?.$progress as HTMLElement | undefined;
+    const seekProgressToClientX = (clientX: number) => {
+      if (!progressEl) return;
+      const next = seekTimeFromClientX(clientX, progressEl.getBoundingClientRect(), art.duration);
+      if (next === null) return;
+      try {
+        art.currentTime = next;
+      } catch {
+        /* 忽略 */
+      }
+    };
+    const onProgressPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      scrubbingProgress = true;
+      art.controls.show = true;
+      if (controlHideTimer) {
+        clearTimeout(controlHideTimer);
+        controlHideTimer = null;
+      }
+      seekProgressToClientX(e.clientX);
+      try {
+        progressEl?.setPointerCapture(e.pointerId);
+      } catch {
+        /* 忽略 */
+      }
+      // 阻止冒泡到容器手势，避免拖进度被当成画面横滑 seek
+      e.stopPropagation();
+    };
+    const onProgressPointerMove = (e: PointerEvent) => {
+      if (!scrubbingProgress) return;
+      seekProgressToClientX(e.clientX);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onProgressPointerUp = (e: PointerEvent) => {
+      if (!scrubbingProgress) return;
+      scrubbingProgress = false;
+      seekProgressToClientX(e.clientX);
+      if (Number.isFinite(art.currentTime)) {
+        showHint(`定位 ${formatTime(art.currentTime)}`);
+      }
+      try {
+        progressEl?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 忽略 */
+      }
+      if (!touchPointer && !hoveringChrome && !art.setting.show) scheduleControlHide();
+    };
+    progressEl?.addEventListener('pointerdown', onProgressPointerDown);
+    progressEl?.addEventListener('pointermove', onProgressPointerMove, { passive: false });
+    progressEl?.addEventListener('pointerup', onProgressPointerUp);
+    progressEl?.addEventListener('pointercancel', onProgressPointerUp);
+
+    let activeGesture: {
+      id: number;
+      startX: number;
+      startY: number;
+      half: 'left' | 'right';
+      mode: 'seek' | 'brightness' | 'volume' | null;
+      baseTime: number;
+      baseVolume: number;
+      baseBrightness: number;
+    } | null = null;
 
     const onTouchStart = (e: TouchEvent) => {
       if (art.video?.paused) return;
       // 已有触控在处理时忽略新手指：否则第二指会把 originalRate 捕获成 3.0，
       // 松手后倍速永久卡在 3x；旧定时器句柄也会被覆盖成无法清除的幽灵触发
       if (isLongPress || longPressTimer) return;
+      if (activeGesture?.mode) return;
       // 控制栏 / 设置面板上的长按不触发倍速（按住进度条拖动、长按倍速菜单项会误触）
       if ((e.target as HTMLElement).closest?.('.art-controls, .art-settings')) return;
       originalRate = art.video.playbackRate;
@@ -937,6 +1362,108 @@ export function PlayerShell({
     el?.addEventListener('touchmove', onTouchMove, { passive: false });
     el?.addEventListener('contextmenu', onContextMenu);
 
+    // —— 手势：横向滑动 seek；左半竖滑亮度、右半竖滑音量（避开控制条；与长按 3x 互斥） ——
+    const isOnVideoSurface = (target: EventTarget | null) => {
+      const node = target as HTMLElement | null;
+      if (!node || !el) return false;
+      if (!el.contains(node) && node !== el) return false;
+      if (node.closest?.('.art-controls, .art-settings')) return false;
+      return true;
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (!isOnVideoSurface(e.target)) return;
+      if (art.video?.paused) return;
+      if (isLongPress) return;
+      activeGesture = {
+        id: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        half: 'left',
+        mode: null,
+        baseTime: art.currentTime,
+        baseVolume: art.volume,
+        baseBrightness: brightnessRef.current,
+      };
+      const rect = el?.getBoundingClientRect();
+      if (rect) {
+        activeGesture.half = e.clientX < rect.left + rect.width / 2 ? 'left' : 'right';
+      }
+      try {
+        el?.setPointerCapture(e.pointerId);
+      } catch {
+        /* 忽略 */
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!activeGesture || activeGesture.id !== e.pointerId) return;
+      if (isLongPress) return;
+      const dx = e.clientX - activeGesture.startX;
+      const dy = e.clientY - activeGesture.startY;
+      const rect = el?.getBoundingClientRect();
+      if (!rect) return;
+      if (!activeGesture.mode) {
+        if (Math.hypot(dx, dy) < GESTURE_THRESHOLD_PX) return;
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        activeGesture.mode =
+          Math.abs(dx) >= Math.abs(dy)
+            ? 'seek'
+            : activeGesture.half === 'left'
+              ? 'brightness'
+              : 'volume';
+        activeGesture.baseTime = art.currentTime;
+        activeGesture.baseVolume = art.volume;
+        activeGesture.baseBrightness = brightnessRef.current;
+      }
+      e.preventDefault();
+      if (activeGesture.mode === 'seek') {
+        const dur = art.duration;
+        if (!Number.isFinite(dur) || dur <= 0) return;
+        const delta = (dx / rect.width) * Math.min(dur, 7200) * 0.35;
+        const target = Math.max(0, Math.min(dur, activeGesture.baseTime + delta));
+        try {
+          art.currentTime = target;
+        } catch {
+          /* 忽略 */
+        }
+        setGestureOverlay(`${formatTime(target)} / ${formatTime(dur)}`);
+      } else if (activeGesture.mode === 'brightness') {
+        const b = Math.max(0.5, Math.min(1.5, activeGesture.baseBrightness - dy * 0.004));
+        brightnessRef.current = b;
+        const wrap = art.template?.$video as HTMLElement | undefined;
+        if (wrap) wrap.style.filter = Math.abs(b - 1) < 0.01 ? '' : `brightness(${b})`;
+        setGestureOverlay(`亮度 ${Math.round(b * 100)}%`);
+      } else {
+        const v = Math.max(0, Math.min(1, activeGesture.baseVolume - dy * 0.004));
+        art.volume = v;
+        setGestureOverlay(`音量 ${Math.round(v * 100)}%`);
+      }
+    };
+
+    const endGesture = (e: PointerEvent) => {
+      if (!activeGesture || activeGesture.id !== e.pointerId) return;
+      if (activeGesture.mode === 'seek' && Number.isFinite(art.currentTime)) {
+        showHint(`定位 ${formatTime(art.currentTime)}`);
+      }
+      activeGesture = null;
+      setGestureOverlay('');
+      try {
+        el?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 忽略 */
+      }
+    };
+
+    el?.addEventListener('pointerdown', onPointerDown);
+    el?.addEventListener('pointermove', onPointerMove, { passive: false });
+    el?.addEventListener('pointerup', endGesture);
+    el?.addEventListener('pointercancel', endGesture);
+
     // 卸载与页面隐藏时保存进度
     const saveOnHide = () => {
       if (document.visibilityState === 'hidden' && !endedRef.current) {
@@ -959,6 +1486,13 @@ export function PlayerShell({
       volumeBoostRef.current = null;
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+      clearSleepTimer();
+      el?.removeEventListener('pointerdown', onPointerDown);
+      el?.removeEventListener('pointermove', onPointerMove);
+      el?.removeEventListener('pointerup', endGesture);
+      el?.removeEventListener('pointercancel', endGesture);
       el?.removeEventListener('touchstart', onTouchStart);
       el?.removeEventListener('touchend', onTouchEnd);
       el?.removeEventListener('touchcancel', onTouchEnd);
@@ -967,6 +1501,12 @@ export function PlayerShell({
       art.video?.removeEventListener('resize', reportVideoHeight);
       el?.removeEventListener('mousemove', showControlsOnPointerMove);
       el?.removeEventListener('mouseleave', hideControlsOnMouseLeave);
+      bottomEl?.removeEventListener('mouseenter', onChromeEnter);
+      bottomEl?.removeEventListener('mouseleave', onChromeLeave);
+      progressEl?.removeEventListener('pointerdown', onProgressPointerDown);
+      progressEl?.removeEventListener('pointermove', onProgressPointerMove);
+      progressEl?.removeEventListener('pointerup', onProgressPointerUp);
+      progressEl?.removeEventListener('pointercancel', onProgressPointerUp);
       if (controlHideTimer) clearTimeout(controlHideTimer);
       restoreCleanupRef.current?.();
       restoreCleanupRef.current = null;
@@ -1077,6 +1617,53 @@ export function PlayerShell({
           }}
         />
       )}
+      {!error && gestureOverlay && (
+        <div className="absolute inset-0 z-[11] flex items-center justify-center pointer-events-none">
+          <div className="rounded-2xl bg-black/80 px-8 py-5 text-xl font-medium text-white tabular-nums shadow-lg">
+            {gestureOverlay}
+          </div>
+        </div>
+      )}
+      {!error && buffering && !showPoster && (
+        <div className="absolute inset-0 z-[9] flex flex-col items-center justify-center gap-3 bg-black/45 pointer-events-none">
+          <div className="flex items-center gap-2 rounded-full bg-black/75 px-4 py-2 text-sm text-white">
+            <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" aria-hidden />
+            <span>{bufferingLong ? '缓冲较慢…' : '正在缓冲…'}</span>
+          </div>
+          {bufferingLong && (
+            <button
+              type="button"
+              className="pointer-events-auto rounded-full bg-white/15 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              onClick={() => propsRef.current.onRequestSwitchSource?.('缓冲超时')}
+            >
+              切换资源
+            </button>
+          )}
+        </div>
+      )}
+      {!error && resumeOffer !== null && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-black/75 px-3 py-1.5 text-sm text-white animate-fade-in">
+          <span className="pointer-events-none">已定位到 {formatTime(resumeOffer)}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded-full bg-white/20 px-2.5 py-0.5 text-xs font-medium transition-colors hover:bg-white/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            onClick={() => {
+              if (skipTo(0)) showHint('已从头播放');
+              dismissResumeOffer();
+            }}
+          >
+            从头播放
+          </button>
+          <button
+            type="button"
+            className="shrink-0 rounded-full p-1 text-white/80 transition-colors hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            onClick={dismissResumeOffer}
+            aria-label="关闭续播提示"
+          >
+            <Icon name="close" className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {!error && skipPrompt && (
         <button
           type="button"
@@ -1103,14 +1690,25 @@ export function PlayerShell({
         </button>
       )}
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/80">
-          <p className="text-danger text-sm">{error}</p>
-          <button className="btn-ghost text-xs" onClick={() => location.reload()}>
-            重新加载
-          </button>
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 px-4">
+          <p className="text-danger text-sm text-center max-w-md">{error}</p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {onRequestSwitchSource && (
+              <button
+                type="button"
+                className="btn-primary btn-sm"
+                onClick={() => onRequestSwitchSource('播放失败')}
+              >
+                切换资源
+              </button>
+            )}
+            <button type="button" className="btn-ghost btn-sm" onClick={() => location.reload()}>
+              重新加载
+            </button>
+          </div>
         </div>
       )}
-      {(hint || undoSkip) && (
+      {(hint || undoSkip) && resumeOffer === null && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-sm text-white animate-fade-in">
           {/* 撤销窗口比普通提示长：hint 已淡出时仍要让用户知道刚才跳过了什么 */}
           <span className="pointer-events-none">
@@ -1125,11 +1723,6 @@ export function PlayerShell({
               撤销
             </button>
           )}
-        </div>
-      )}
-      {autoplayNext && !error && (
-        <div className="absolute bottom-16 right-3 text-[10px] text-muted bg-black/50 px-2 py-0.5 rounded pointer-events-none">
-          自动连播已开启
         </div>
       )}
     </div>

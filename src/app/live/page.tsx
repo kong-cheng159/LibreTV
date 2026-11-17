@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/client-api';
 import { copyToClipboard } from '@/lib/clipboard';
-import { Header } from '@/components/header';
+import { AppShell } from '@/components/app-shell';
+import { PageSearchBar } from '@/components/page-search-bar';
 // 播放器（artplayer + hls.js）按需加载：拆出独立 chunk，不占首屏 First Load JS
 import dynamic from 'next/dynamic';
 const LivePlayer = dynamic(() => import('@/components/live-player').then((m) => m.LivePlayer), {
@@ -27,8 +28,8 @@ import { SmartImage } from '@/components/smart-image';
 /**
  * 直播页：左侧播放器 + 频道信息 + 节目单；右侧频道侧栏。
  * 状态由 URL 驱动（?url=&name=&group=&tvgId=&epg=），支持频道深链与刷新保持。
- * 换台路径：侧栏点击、全局 ↑↓ 键盘、播放器控制条上一台/下一台（全屏可用）。
- * 移动端侧栏为底部抽屉（右下角 FAB 呼出，选中频道后自动收起）。
+ * 换台路径：侧栏点击、全局 ↑↓ / 数字键跳台、Backspace 回上一台、播放器控制条上一台/下一台（全屏可用）。
+ * 无 ?url= 时自动恢复 liveLastChannel。移动端侧栏为底部抽屉（FAB 呼出，选中后收起）。
  */
 export default function LivePage() {
   return (
@@ -46,6 +47,7 @@ function LiveContent() {
   const liveEnvSources = useAppStore((s) => s.liveEnvSources);
   const liveSubscriptions = useAppStore((s) => s.liveSubscriptions);
   const liveFavorites = useAppStore((s) => s.liveFavorites);
+  const liveLastChannel = useAppStore((s) => s.liveLastChannel);
   const imageProxyMode = useAppStore((s) => s.imageProxyMode);
   const volumeBoost = useAppStore((s) => s.volumeBoost);
   const customImageProxy = useAppStore((s) => s.customImageProxy);
@@ -54,6 +56,11 @@ function LiveContent() {
   // 移动端频道抽屉开合
   const [listOpen, setListOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
+  /** 数字键切台：累积中的号码与短暂提示文案 */
+  const [zapOverlay, setZapOverlay] = useState<string | null>(null);
+  const zapDigitsRef = useRef('');
+  const zapTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoRestoredRef = useRef(false);
   /** 侧栏上报的筛选排序结果（键盘换台沿此列表顺序）；ref 存储，不触发重渲染 */
   const filteredRef = useRef<LiveChannelItem[]>([]);
   /** 当前频道镜像：selectChannel 内读取最近一次播放的频道，用于记录"上一个频道" */
@@ -165,6 +172,75 @@ function LiveContent() {
   const goPrevChannel = useCallback(() => switchChannelByOffset(-1), [switchChannelByOffset]);
   const goNextChannel = useCallback(() => switchChannelByOffset(1), [switchChannelByOffset]);
 
+  const resolveChannelByZapNumber = useCallback((list: LiveChannelItem[], num: number): LiveChannelItem | undefined => {
+    if (num <= 0) return undefined;
+    const hasChno = list.some((c) => c.channelNo != null);
+    if (hasChno) {
+      return list.find((c) => c.channelNo === num);
+    }
+    if (num <= list.length) return list[num - 1];
+    return undefined;
+  }, []);
+
+  const commitZapNumber = useCallback(
+    (digits: string) => {
+      if (!digits) return;
+      const num = parseInt(digits, 10);
+      if (!Number.isFinite(num)) return;
+      const list = filteredRef.current.length > 0 ? filteredRef.current : channels;
+      const target = resolveChannelByZapNumber(list, num);
+      if (target) {
+        setZapOverlay(`${num} · ${target.name}`);
+        selectChannel(target);
+        window.setTimeout(() => setZapOverlay(null), 1200);
+      } else {
+        setZapOverlay(`${num} 无此频道`);
+        window.setTimeout(() => setZapOverlay(null), 1200);
+      }
+    },
+    [channels, resolveChannelByZapNumber, selectChannel]
+  );
+
+  const appendZapDigit = useCallback(
+    (digit: string) => {
+      const next = `${zapDigitsRef.current}${digit}`.slice(0, 4);
+      zapDigitsRef.current = next;
+      setZapOverlay(`跳台 ${next}`);
+      if (zapTimerRef.current) clearTimeout(zapTimerRef.current);
+      zapTimerRef.current = setTimeout(() => {
+        const buf = zapDigitsRef.current;
+        zapDigitsRef.current = '';
+        setZapOverlay(null);
+        commitZapNumber(buf);
+      }, 1200);
+    },
+    [commitZapNumber]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (zapTimerRef.current) clearTimeout(zapTimerRef.current);
+    };
+  }, []);
+
+  /** 无 URL 参数时恢复上次观看的频道（仍在当前订阅列表中） */
+  useEffect(() => {
+    if (autoRestoredRef.current || currentUrl) return;
+    if (!liveLastChannel?.url) {
+      autoRestoredRef.current = true;
+      return;
+    }
+    if (playlistsQuery.isLoading || channels.length === 0) return;
+    autoRestoredRef.current = true;
+    const found = channels.find((c) => c.url === liveLastChannel.url);
+    if (!found) return;
+    selectChannel({
+      ...found,
+      epg: found.epg ?? liveLastChannel.epg,
+      sourceUrl: found.sourceUrl ?? liveLastChannel.sourceUrl,
+    });
+  }, [channels, currentUrl, liveLastChannel, playlistsQuery.isLoading, selectChannel]);
+
   /** 切回上一个频道（Backspace / 信息条按钮） */
   const backToPrevChannel = useCallback(() => {
     const prev = lastChannelRef.current;
@@ -173,12 +249,10 @@ function LiveContent() {
     selectChannel(prev);
   }, [selectChannel]);
 
-  // 全局键盘：↑↓ 直接切台，Backspace 切回上一个频道。
+  // 全局键盘：↑↓ 直接切台；0-9 数字累积跳台；Backspace 切回上一个频道（输入中则删末位数字）。
   // 输入框/列表光标导航场景让位（列表聚焦时由列表内 ↑↓ 管理光标）
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const isChannelKey = e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Backspace';
-      if (!isChannelKey) return;
       if (e.repeat || e.altKey || e.ctrlKey || e.metaKey) return;
       const target = e.target as HTMLElement | null;
       if (target) {
@@ -187,13 +261,39 @@ function LiveContent() {
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (target.closest('[data-channel-list]')) return;
       }
+
+      const isDigit = e.key.length === 1 && e.key >= '0' && e.key <= '9';
+      const isChannelKey =
+        e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Backspace' || isDigit;
+      if (!isChannelKey) return;
+
       e.preventDefault();
-      if (e.key === 'Backspace') backToPrevChannel();
-      else switchChannelByOffset(e.key === 'ArrowDown' ? 1 : -1);
+
+      if (isDigit) {
+        appendZapDigit(e.key);
+        return;
+      }
+
+      if (e.key === 'Backspace') {
+        if (zapDigitsRef.current) {
+          const next = zapDigitsRef.current.slice(0, -1);
+          zapDigitsRef.current = next;
+          if (next) setZapOverlay(`跳台 ${next}`);
+          else {
+            setZapOverlay(null);
+            if (zapTimerRef.current) clearTimeout(zapTimerRef.current);
+          }
+          return;
+        }
+        backToPrevChannel();
+        return;
+      }
+
+      switchChannelByOffset(e.key === 'ArrowDown' ? 1 : -1);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [switchChannelByOffset, backToPrevChannel]);
+  }, [switchChannelByOffset, backToPrevChannel, appendZapDigit]);
 
   const handleSelect = useCallback(
     (c: LiveChannelItem) => {
@@ -206,12 +306,11 @@ function LiveContent() {
 
   if (!verified) {
     return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
+      <AppShell>
         <div className="flex-1 flex items-center justify-center">
           <p className="text-faint text-sm">等待访问验证...</p>
         </div>
-      </div>
+      </AppShell>
     );
   }
 
@@ -219,13 +318,23 @@ function LiveContent() {
   const isFavorite = currentChannel ? liveFavorites.includes(currentChannel.url) : false;
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Header showSearch />
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4">
+    <AppShell>
+      <div className="shell pt-4 pb-2 hidden sm:block">
+        <PageSearchBar />
+      </div>
+      <main className="flex-1 shell py-4">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
           {/* 主栏：播放器 + 信息条 + 节目单 */}
           <div className="min-w-0">
-            <div className="aspect-video bg-black rounded-lg overflow-hidden">
+            <div className="aspect-video bg-black rounded-lg overflow-hidden relative">
+              {zapOverlay && (
+                <div
+                  className="absolute top-3 right-3 z-20 rounded-lg bg-black/75 px-3 py-2 text-sm font-semibold text-white shadow-lg pointer-events-none"
+                  aria-live="polite"
+                >
+                  {zapOverlay}
+                </div>
+              )}
               {currentUrl ? (
                 <LivePlayer
                   url={currentUrl}
@@ -471,6 +580,6 @@ function LiveContent() {
           </button>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }

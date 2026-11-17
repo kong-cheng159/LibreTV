@@ -10,11 +10,15 @@
     "start": "next start -p 8080",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "desktop:prepare": "node scripts/prepare-sidecar.mjs",
+    "desktop:build": "node scripts/desktop-build.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
     "@tanstack/react-virtual": "^3.14.12",
+    "@tauri-apps/api": "^2.12.4",
     "artplayer": "^5.2.3",
     "dexie": "^4.0.8",
     "dexie-react-hooks": "^1.1.7",
@@ -28,6 +32,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

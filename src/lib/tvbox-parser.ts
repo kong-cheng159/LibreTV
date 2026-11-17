@@ -229,6 +229,35 @@ function isMixedCatalogPayload(json: unknown): boolean {
 }
 
 /**
+ * 采集站接口返回（ac=list/detail）：有 list[].vod_id 或 class[].type_id，
+ * 不是「源列表订阅」。常被用户误贴进订阅框 / 当 JSON 文件导入。
+ */
+export function looksLikeAppleCmsApiResponse(json: unknown): boolean {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return false;
+  const root = json as Record<string, unknown>;
+  if (Array.isArray(root.list) && root.list.length > 0) {
+    const first = root.list[0];
+    if (first && typeof first === 'object' && !Array.isArray(first) && 'vod_id' in first) {
+      return true;
+    }
+  }
+  if (Array.isArray(root.class) && root.class.length > 0) {
+    const first = root.class[0];
+    if (
+      first &&
+      typeof first === 'object' &&
+      !Array.isArray(first) &&
+      ('type_id' in first || 'type_name' in first) &&
+      !('url' in first) &&
+      !('baseUrl' in first)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 解析订阅 JSON：自动识别格式（TVBOX → 接口目录 → LibreTV-SourceList）。
  * 三者均不匹配时由 parseSourceListPayload 抛出格式错误。
  *
@@ -238,6 +267,11 @@ function isMixedCatalogPayload(json: unknown): boolean {
  * （那边读 url，丢的是 baseUrl 那批），两种都是无声的数据损失。
  */
 export function parseSubscriptionPayload(json: unknown): SourceListPayload {
+  if (looksLikeAppleCmsApiResponse(json)) {
+    throw new Error(
+      '这是采集站接口返回的影片/分类数据，不是源列表订阅。请到「点播源」手动添加接口地址（如 …/api.php/provide/vod），或导入含 sources / liveSources 的 JSON'
+    );
+  }
   if (isTvboxPayload(json)) return parseTvboxPayload(json);
   if (isSourceCatalogPayload(json)) return parseSourceCatalogPayload(json);
   if (isMixedCatalogPayload(json)) {

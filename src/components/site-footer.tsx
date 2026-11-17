@@ -90,8 +90,8 @@ export function SiteFooter() {
   const { version } = useAuth();
   const upstreamUpdate = useUpstreamUpdate(version);
   return (
-    <footer className="border-t border-line py-4">
-      <p className="text-center text-xs text-faint">
+    <footer className="border-t border-line/70 py-6 mt-auto">
+      <p className="shell text-center text-xs text-faint tracking-wide">
         <a
           href="https://github.com/LibreSpark/LibreTV"
           target="_blank"

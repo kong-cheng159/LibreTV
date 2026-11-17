@@ -1,14 +1,69 @@
+# 依赖与构建
 node_modules/
 .next/
 out/
-.env
-.env*.local
+dist/
+coverage/
 *.tsbuildinfo
 vitest-results.json
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# AI 工具产物（本机会话/缓存数据，不入库）
+# 环境变量 / 密钥（保留示例）
+.env
+.env.*
+!.env.example
+
+# 操作系统 / 编辑器杂文件
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# AI 工具产物（本机会话/缓存，不入库）
 .mimosa/
 .zcode/
 .codebuddy/
+.claude/
+.codex/
 generated-images/
+.cursor/
+
+# ---------------------------------------------------------------------------
+# Tauri 桌面端
+# ---------------------------------------------------------------------------
+
+# Rust / Tauri 构建产物
+src-tauri/target/
+src-tauri/gen/
+
+# 下载的 Node sidecar（体积大，由 npm run desktop:prepare 拉取）
+src-tauri/binaries/*
+!src-tauri/binaries/README.txt
+
+# Next.js standalone 打包进安装包的运行时（由 prepare-sidecar 生成）
+src-tauri/resources/standalone/*
+!src-tauri/resources/standalone/README.txt
+
+# 桌面安装包输出（npm run desktop:build → 根目录 release/）
+# 注意：不能用根目录 app/，会与 Next.js App Router（src/app）冲突
+/release/*
+!/release/README.txt
+
+# 误把安装包放到根目录 app/ 时整目录忽略，避免再次入库或干扰路由
+/app/
+
+# 根目录散落的安装包 / 预构建产物（勿提交大二进制）
+/LibreTV_*.exe
+/*.msi
+/*.nsis.zip
+/libretv-*-standalone.tar.gz
+/libretv-*-standalone.zip
+)

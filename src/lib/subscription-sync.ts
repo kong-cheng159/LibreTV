@@ -3,8 +3,51 @@
 import { ApiError, api } from './client-api';
 import { normalizeSubscriptionUrl } from './source-list';
 import { useAppStore, type SourceSubscription } from './store';
-import { describeParseStats } from './tvbox-parser';
+import { describeParseStats, parseSubscriptionPayload } from './tvbox-parser';
 import type { AuthStatusResponse, SubscriptionParseStats } from './types';
+
+/** 本地 JSON 导入的订阅地址前缀：不可远程同步，刷新需重新选文件 */
+export const LOCAL_SOURCE_LIST_PREFIX = 'local://file/';
+
+/** 由文件名生成稳定订阅 id，同名文件再次导入会整体替换 */
+export function localSourceListId(fileName: string): string {
+  const safe = fileName.trim().replace(/[^\w.\u4e00-\u9fff-]+/g, '_') || 'sources.json';
+  return `${LOCAL_SOURCE_LIST_PREFIX}${safe}`;
+}
+
+export function isLocalSourceListId(url: string): boolean {
+  return url.startsWith(LOCAL_SOURCE_LIST_PREFIX);
+}
+
+/**
+ * 从本地 JSON 文件导入源列表（LibreTV / TVBOX / 接口目录），不走网络。
+ * 记入订阅列表，便于整组删除；自动刷新对该类订阅无效。
+ */
+export async function importLocalSourceListFile(file: File): Promise<SubscriptionSyncResult> {
+  const text = await file.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error('不是合法的 JSON 文件');
+  }
+  const { name, sources, liveSources, stats } = parseSubscriptionPayload(json);
+  if (sources.length === 0 && liveSources.length === 0) {
+    throw new Error('订阅内容为空');
+  }
+  const url = localSourceListId(file.name);
+  const store = useAppStore.getState();
+  const vodCount = store.applySubscriptionSources(url, sources);
+  const liveCount = store.applySubscriptionLive(url, liveSources);
+  const displayName = name || file.name.replace(/\.json$/i, '') || '本地源列表';
+  if (!store.subscriptions.some((s) => s.url === url)) {
+    store.addSubscription(url, displayName);
+  }
+  // 本地文件不可远程刷新：强制保持手动
+  store.setSubscriptionRefreshDays(url, undefined);
+  store.markSubscriptionSynced(url, displayName, { vod: vodCount, live: liveCount });
+  return { name: displayName, vodCount, liveCount, stats };
+}
 
 /**
  * 数据源订阅同步核心逻辑，供两处复用：
@@ -95,8 +138,9 @@ export function isRefreshDue(
   return now - lastSync >= interval;
 }
 
-/** 该订阅此刻是否该自动刷新：未设周期、或连续失败已触顶的一律不刷 */
+/** 该订阅此刻是否该自动刷新：未设周期、本地文件、或连续失败已触顶的一律不刷 */
 export function canAutoRefresh(sub: SourceSubscription, now = Date.now()): boolean {
+  if (isLocalSourceListId(sub.url)) return false;
   if (!sub.refreshDays) return false;
   if ((sub.failStreak ?? 0) >= AUTO_REFRESH_MAX_FAIL_STREAK) return false;
   return isRefreshDue(sub.lastSync, sub.refreshDays, now);

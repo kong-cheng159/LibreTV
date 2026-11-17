@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/client-api';
 // 播放器（artplayer + hls.js）按需加载：拆出独立 chunk，不占首屏 First Load JS
 const PlayerShell = dynamic(() => import('@/components/player-shell').then((m) => m.PlayerShell), {
@@ -16,7 +16,11 @@ const PlayerShell = dynamic(() => import('@/components/player-shell').then((m) =
   ),
 });
 import { EmptyState, LoadingState, Spinner } from '@/components/states';
-import { SwitchSourceModal } from '@/components/switch-source';
+import {
+  SwitchSourcePanel,
+  peekNextSwitchCandidate,
+  prepareSwitchNavigation,
+} from '@/components/switch-source';
 import { SkipMarkPanel } from '@/components/skip-mark-panel';
 import {
   endingTailSeconds,
@@ -30,7 +34,7 @@ import { useToast } from '@/components/toast';
 import { enqueueDownload } from '@/components/download-manager';
 import { Icon } from '@/components/icon';
 import { useAuth } from '@/components/auth';
-import { resolveSource, useAppStore } from '@/lib/store';
+import { isInWatchlist, resolveSource, useAppStore } from '@/lib/store';
 import { qualityKey } from '@/lib/quality';
 import {
   clearProgress,
@@ -59,6 +63,7 @@ function WatchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const store = useAppStore();
+  const queryClient = useQueryClient();
   const { verified } = useAuth();
   const { toast } = useToast();
 
@@ -69,13 +74,18 @@ function WatchContent() {
   const indexParam = parseInt(searchParams.get('index') || '0', 10) || 0;
 
   const [reversed, setReversed] = useState(false);
-  const [switchOpen, setSwitchOpen] = useState(false);
   const [skipPanelOpen, setSkipPanelOpen] = useState(false);
   // 播放器对外暴露的精确时间读取接口（「记录当前」用），随播放器卸载置空
   const playerApiRef = useRef<PlayerSkipApi | null>(null);
   // 播放框：小屏「跳过标记」抽屉要按它的底边算剩余高度，避免压住画面
   const playerFrameRef = useRef<HTMLDivElement | null>(null);
+  /** 换源常驻面板：缓冲超时 / 播放失败时滚到这里，不再弹层 */
+  const switchPanelRef = useRef<HTMLDivElement | null>(null);
   const [sheetMaxHeight, setSheetMaxHeight] = useState<number | undefined>(undefined);
+
+  const focusSwitchPanel = useCallback(() => {
+    switchPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, []);
 
   useEffect(() => {
     if (!skipPanelOpen) return;
@@ -145,6 +155,9 @@ function WatchContent() {
   const skipMark = store.skipMarks[markKey];
   const markedCount = skipMark?.segments.length ?? 0;
 
+  const watchId = vodId || currentUrl;
+  const watching = useAppStore((s) => (watchId ? isInWatchlist(s, sourceKey, watchId) : false));
+
   // 中段两步态的起点：页面层持有，面板按钮与 Shift+S/E 共用同一份状态
   const [pendingStart, setPendingStart] = useState<number | null>(null);
   // 换集清空中段两步态：起点属于上一集，不能和新集的位置拼成区间
@@ -202,18 +215,111 @@ function WatchContent() {
     [sourceKey, vodId, currentIndex, currentUrl]
   );
 
-  // 自动连播的 800ms 延迟切集要在卸载时取消，避免离开页面后跳转
-  const autoNextTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
+  // 连播倒计时：可取消；卸载时清掉，避免离开后仍跳集
+  const [nextCountdown, setNextCountdown] = useState<number | null>(null);
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const clearCountdown = useCallback(() => {
+    if (countdownTimer.current) {
+      clearInterval(countdownTimer.current);
+      countdownTimer.current = null;
+    }
+    setNextCountdown(null);
   }, []);
+  useEffect(() => () => clearCountdown(), [clearCountdown]);
+  useEffect(() => {
+    clearCountdown();
+  }, [sourceKey, vodId, currentIndex, clearCountdown]);
 
   const handleEnded = useCallback(() => {
     if (vodId) clearProgress(sourceKey, vodId, currentIndex).catch(() => {});
-    if (store.autoplayNext && currentIndex < episodes.length - 1) {
-      autoNextTimer.current = setTimeout(() => goEpisode(currentIndex + 1), 800);
+    if (!store.autoplayNext || currentIndex >= episodes.length - 1) return;
+    clearCountdown();
+    setNextCountdown(5);
+    countdownTimer.current = setInterval(() => {
+      setNextCountdown((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          if (countdownTimer.current) {
+            clearInterval(countdownTimer.current);
+            countdownTimer.current = null;
+          }
+          goEpisode(currentIndex + 1);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, sourceKey, vodId, clearCountdown]);
+
+  const tryAutoSwitchSource = useCallback(() => {
+    focusSwitchPanel();
+    const next = peekNextSwitchCandidate(videoTitle, sourceKey, vodId);
+    if (!next) {
+      toast('没有其它可用源，请手动选择', 'warning');
+      return;
     }
-  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, sourceKey, vodId]);
+    const href = prepareSwitchNavigation(next, {
+      currentTitle: videoTitle,
+      currentIndex,
+      currentEpisodeTitle: detailQuery.data?.episodeTitles?.[currentIndex],
+      queryClient,
+    });
+    if (!href) {
+      toast('自动换源失败', 'error');
+      return;
+    }
+    toast(`已自动切换到「${next.source.name}」`, 'info');
+    router.replace(href, { scroll: false });
+  }, [
+    focusSwitchPanel,
+    videoTitle,
+    sourceKey,
+    vodId,
+    currentIndex,
+    detailQuery.data?.episodeTitles,
+    queryClient,
+    router,
+    toast,
+  ]);
+
+  const downloadMany = useCallback(
+    (mode: 'one' | 'remaining' | 'all') => {
+      if (!episodes.length) {
+        if (currentUrl) {
+          enqueueDownload({
+            url: currentUrl,
+            title: videoTitle,
+            format: 'MP4',
+          });
+        }
+        return;
+      }
+      const indices =
+        mode === 'one'
+          ? [currentIndex]
+          : mode === 'remaining'
+            ? episodes.map((_, i) => i).filter((i) => i >= currentIndex)
+            : episodes.map((_, i) => i);
+      for (const i of indices) {
+        const url = episodes[i];
+        if (!url) continue;
+        enqueueDownload({
+          url,
+          title: `${videoTitle}${episodes.length > 1 ? ` 第${i + 1}集` : ''}`,
+          format: 'MP4',
+        });
+      }
+      toast(
+        mode === 'one'
+          ? '已加入本集下载'
+          : mode === 'remaining'
+            ? `已加入后续 ${indices.length} 集下载`
+            : `已加入全部 ${indices.length} 集下载`,
+        'success'
+      );
+    },
+    [episodes, currentIndex, currentUrl, videoTitle, toast]
+  );
 
   // 快捷键（Shift+I/O/S/E）记录片段：校验后写入
   const handleRecordSegment = useCallback(
@@ -299,26 +405,52 @@ function WatchContent() {
             </p>
           </div>
           <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <button
-              className="btn-ghost btn-sm"
-              onClick={() => {
-                if (!currentUrl) return;
-                enqueueDownload({
-                  url: currentUrl,
-                  // 多集才带集数后缀；单集影片（含电影）文件名就是纯标题
-                  title: `${videoTitle}${episodes.length > 1 ? ` 第${currentIndex + 1}集` : ''}`,
-                  format: 'MP4',
-                });
-                // 「已加入下载队列」由 DownloadManager 在真正入队后提示：
-                // 这里先提示的话，用户随后取消保存位置会出现「已加入→已取消」的矛盾
-              }}
-            >
-              {/* 手机上顶栏放不下完整按钮：只留图标，aria-label 保证可访问性 */}
-              <Icon name="download" className="w-4 h-4 sm:hidden" />
-              <span className="hidden sm:inline">下载本集</span>
-              <span className="sr-only sm:hidden">下载本集</span>
-            </button>
-            <button className="btn-ghost btn-sm" onClick={() => setSwitchOpen(true)}>
+            {sourceKey && watchId ? (
+              <button
+                type="button"
+                className={cn('btn-ghost btn-sm', watching && 'text-accent')}
+                aria-pressed={watching}
+                onClick={() => {
+                  useAppStore.getState().toggleWatchlist({
+                    sourceKey,
+                    vodId: watchId,
+                    title: videoTitle,
+                    pic: detailQuery.data?.videoInfo?.cover,
+                    sourceUrl: source?.url,
+                    totalEpisodes: episodes.length > 0 ? episodes.length : undefined,
+                  });
+                }}
+              >
+                <span className="hidden sm:inline">{watching ? '已追剧' : '追剧'}</span>
+                <span className="sm:hidden">{watching ? '已追' : '追剧'}</span>
+              </button>
+            ) : null}
+            <div className="relative group/dl">
+              <button
+                type="button"
+                className="btn-ghost btn-sm"
+                onClick={() => downloadMany('one')}
+                aria-haspopup="menu"
+              >
+                <Icon name="download" className="w-4 h-4 sm:hidden" />
+                <span className="hidden sm:inline">下载</span>
+                <span className="sr-only sm:hidden">下载</span>
+              </button>
+              {episodes.length > 1 && (
+                <div className="invisible opacity-0 group-hover/dl:visible group-hover/dl:opacity-100 group-focus-within/dl:visible group-focus-within/dl:opacity-100 transition-opacity absolute right-0 top-full mt-1 z-50 min-w-[9rem] rounded-lg border border-line bg-surface-raised shadow-lg p-1">
+                  <button type="button" className="w-full text-left px-2.5 py-1.5 rounded-md text-xs text-content hover:bg-hover" onClick={() => downloadMany('one')}>
+                    下载本集
+                  </button>
+                  <button type="button" className="w-full text-left px-2.5 py-1.5 rounded-md text-xs text-content hover:bg-hover" onClick={() => downloadMany('remaining')}>
+                    下载未看后续
+                  </button>
+                  <button type="button" className="w-full text-left px-2.5 py-1.5 rounded-md text-xs text-content hover:bg-hover" onClick={() => downloadMany('all')}>
+                    下载全集
+                  </button>
+                </div>
+              )}
+            </div>
+            <button type="button" className="btn-ghost btn-sm" onClick={focusSwitchPanel}>
               切换资源
             </button>
           </div>
@@ -326,9 +458,9 @@ function WatchContent() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
-          <div>
-            <div ref={playerFrameRef} className="aspect-video bg-black rounded-lg overflow-hidden">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] gap-4 min-w-0">
+          <div className="min-w-0 max-w-full overflow-x-hidden">
+            <div ref={playerFrameRef} className="relative aspect-video bg-black rounded-lg overflow-hidden">
               {currentUrl ? (
                 <PlayerShell
                   url={currentUrl}
@@ -361,6 +493,7 @@ function WatchContent() {
                       [qualityKey(sourceKey, vodId)]: { height, from: 'play', timestamp: Date.now() },
                     });
                   }}
+                  onRequestSwitchSource={tryAutoSwitchSource}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
@@ -373,51 +506,39 @@ function WatchContent() {
                   )}
                 </div>
               )}
+              {nextCountdown !== null && (
+                <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/55">
+                  <div className="rounded-2xl bg-black/80 px-5 py-4 text-center text-white shadow-lg">
+                    <p className="text-sm">即将播放下一集</p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">{nextCountdown}s</p>
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      <button type="button" className="btn-primary btn-sm" onClick={() => { clearCountdown(); goEpisode(currentIndex + 1); }}>
+                        立刻播放
+                      </button>
+                      <button type="button" className="btn-ghost btn-sm text-white" onClick={clearCountdown}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* 操作栏 */}
-            <div className="flex flex-wrap items-center gap-2 mt-3">
-              <button
-                className="btn-ghost btn-sm"
-                disabled={currentIndex <= 0}
-                onClick={() => goEpisode(currentIndex - 1)}
-              >
-                上一集
-              </button>
-              <button
-                className="btn-ghost btn-sm"
-                disabled={episodes.length === 0 || currentIndex >= episodes.length - 1}
-                onClick={() => goEpisode(currentIndex + 1)}
-              >
-                下一集
-              </button>
-              <button
-                className={cn('btn-ghost btn-sm', skipPanelOpen && 'bg-chip text-content')}
-                aria-expanded={skipPanelOpen}
-                aria-haspopup="dialog"
-                onClick={() => setSkipPanelOpen((v) => !v)}
-                title={
-                  markedCount > 0
-                    ? `本剧已标记 ${markedCount} 段${skipMark?.enabled === false ? '（本剧跳过已关闭）' : ''}`
-                    : '标记片头 / 中段 / 片尾，供本剧各集自动跳过'
-                }
-              >
-                跳过标记{markedCount > 0 ? ` (${markedCount})` : ''}
-                {markedCount > 0 && skipMark?.enabled === false && (
-                  <span className="ml-1 inline-block size-1.5 rounded-full bg-faint" aria-label="本剧跳过已关闭" />
-                )}
-              </button>
-              <label className="flex items-center gap-1.5 text-xs text-muted ml-auto cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-[#2563eb]"
-                  checked={store.autoplayNext}
-                  onChange={(e) => store.updateSettings({ autoplayNext: e.target.checked })}
+            {/* 换源常驻：搜索/测速结果直接展示，不必再点顶栏弹层 */}
+            {verified && videoTitle && (
+              <div ref={switchPanelRef} className="min-w-0 max-w-full">
+                <SwitchSourcePanel
+                  currentTitle={videoTitle}
+                  currentSourceKey={sourceKey}
+                  currentVodId={vodId}
+                  currentIndex={currentIndex}
+                  currentEpisodeTitle={detailQuery.data?.episodeTitles?.[currentIndex]}
+                  variant="inline"
                 />
-                自动连播
-              </label>
-            </div>
+              </div>
+            )}
 
+            {/* 跳过面板挂在播放区：入口收到侧栏次级，默认不展开 */}
             <SkipMarkPanel
               open={skipPanelOpen}
               onClose={() => setSkipPanelOpen(false)}
@@ -479,22 +600,43 @@ function WatchContent() {
                 ))}
               </div>
             )}
-            <p className="hidden md:block text-[10px] text-faint mt-3 leading-relaxed">
-              快捷键：空格 播放/暂停 · ←/→ 快退/快进 5s · ↑/↓ 音量 · F 全屏 · Alt+←/→ 切换集数
-            </p>
+            {/* 次级操作：跳过标记 / 自动连播，不与主控条抢视线 */}
+            <div className="mt-3 pt-3 border-t border-line space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  className={cn('btn-ghost btn-sm', skipPanelOpen && 'bg-chip text-content')}
+                  aria-expanded={skipPanelOpen}
+                  aria-haspopup="dialog"
+                  onClick={() => setSkipPanelOpen((v) => !v)}
+                  title={
+                    markedCount > 0
+                      ? `本剧已标记 ${markedCount} 段${skipMark?.enabled === false ? '（本剧跳过已关闭）' : ''}`
+                      : '标记片头 / 中段 / 片尾，供本剧各集自动跳过'
+                  }
+                >
+                  跳过标记{markedCount > 0 ? ` (${markedCount})` : ''}
+                  {markedCount > 0 && skipMark?.enabled === false && (
+                    <span className="ml-1 inline-block size-1.5 rounded-full bg-faint" aria-label="本剧跳过已关闭" />
+                  )}
+                </button>
+                <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-[#2563eb]"
+                    checked={store.autoplayNext}
+                    onChange={(e) => store.updateSettings({ autoplayNext: e.target.checked })}
+                  />
+                  自动连播
+                </label>
+              </div>
+              <p className="hidden md:block text-[10px] text-faint leading-relaxed">
+                快捷键：空格 播放/暂停 · ←/→ 快退/快进 5s · ↑/↓ 音量 · F 全屏 · Alt+←/→ 切换集数
+              </p>
+            </div>
           </aside>
         </div>
       </main>
 
-      {switchOpen && (
-        <SwitchSourceModal
-          currentTitle={videoTitle}
-          currentSourceKey={sourceKey}
-          currentVodId={vodId}
-          currentIndex={currentIndex}
-          onClose={() => setSwitchOpen(false)}
-        />
-      )}
     </div>
   );
 }

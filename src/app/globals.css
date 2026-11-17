@@ -32,25 +32,27 @@
   --c-success-solid: 21 128 61;    /* green-700 */
   --c-warning-solid: 180 83 9;     /* amber-700 */
   --c-info-solid: 29 78 216;       /* blue-700 */
+  --accent-gradient: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
   color-scheme: light;
 }
 
 .dark {
-  /* 旧版 LibreTV（backup-2025）赛博影视主题（整体调深一档）：深蓝黑底 + 霓虹蓝/粉点缀 */
-  --c-page: 11 16 26;              /* #0b101a 深蓝黑页面底色 */
-  --c-surface: 20 28 41;           /* #141c29 弹窗/抽屉底色 */
-  --c-surface-raised: 20 28 41;
-  --c-card: 13 20 31;              /* #0d141f 卡片底色 */
-  --c-chip: 22 32 46;              /* #16202e 卡片/输入框底色 */
-  --c-hover: 29 42 61;             /* #1d2a3d 悬停态（chip 提亮） */
-  --c-line: 34 48 69;              /* #223045 边框（近似旧版 rgba(0,204,255,.15) 观感） */
-  --c-content: 230 242 255;        /* #e6f2ff 蓝白主文本（--text-color） */
-  --c-muted: 133 153 178;          /* #8599b2 次级文本（--text-muted） */
-  --c-faint: 122 140 166;          /* #7a8ca6 三级文本（原 #6b7f99 在抽屉底色 #141c29 上仅 4.17:1，12px 小字不达标；提亮后 4.99:1） */
-  --c-accent: 0 184 230;           /* #00b8e6 霓虹蓝主色（--primary-color 调深一档） */
-  --c-accent-hover: 51 214 255;    /* #33d6ff 霓虹蓝浅变体（--primary-light） */
-  /* 霓虹蓝底亮度过高（对白字仅 2.35:1），暗色下实心底改用深色文字 */
+  /* 对齐最新 UI 稿：#090B10 影院底 + 青蓝点缀 */
+  --c-page: 9 11 16;               /* #090B10 */
+  --c-surface: 16 20 31;           /* #10141F 弹窗/抽屉 */
+  --c-surface-raised: 19 23 34;    /* #131722 */
+  --c-card: 16 20 31;
+  --c-chip: 22 27 40;              /* 略提亮的输入/芯片底 */
+  --c-hover: 30 36 52;
+  --c-line: 42 50 68;              /* 接近 white/8 的可读边线 */
+  --c-content: 248 250 252;        /* #F8FAFC */
+  --c-muted: 148 163 184;          /* #94A3B8 */
+  --c-faint: 100 116 139;          /* #64748B */
+  --c-accent: 6 182 212;           /* #06B6D4 cyan-500 */
+  --c-accent-hover: 56 189 248;    /* #38BDF8 sky-400 */
+  /* 渐变实心底上用深色字，保证对比度 */
   --c-on-accent: 8 19 31;
+  --accent-gradient: linear-gradient(135deg, #06B6D4 0%, #3B82F6 100%);
   /* 语义状态色（暗色主题取中等明度值，保证深蓝黑底上的对比度） */
   --c-danger: 239 68 68;           /* red-500 */
   --c-danger-hover: 248 113 113;   /* red-400 */
@@ -69,16 +71,44 @@
 html,
 body {
   @apply bg-page text-content antialiased;
+  /* 侧栏抽屉移出视口时，避免整页被撑出横向滚动条；纵向仍由各页自己滚 */
+  overflow-x: hidden;
 }
 
-/* 暗色主题：模拟旧版 .page-bg 的深蓝黑纵向渐变 */
-.dark body {
-  background: linear-gradient(180deg, rgb(11 16 26), rgb(20 28 41)) fixed;
+/* AppShell 挂载时：只保留主栏一条纵向滚动，消除 body 双滚动条 */
+html.app-shell-lock,
+html.app-shell-lock body {
+  overflow: hidden;
+  height: 100%;
 }
 
+/* 亮色：淡灰底 + 顶部冷色光晕 */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background:
+    radial-gradient(70% 45% at 50% -8%, rgba(37, 99, 235, 0.08), transparent 62%),
+    rgb(var(--c-page));
+  background-attachment: fixed;
+}
+
+/* 暗色：影院底；主区光晕由 .main-ambient-bg 承担，避免与侧栏叠两层 */
+.dark body {
+  background: rgb(var(--c-page));
+  background-attachment: fixed;
+}
+
+.dark body::before {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
 }
 
 @layer components {
@@ -111,6 +141,334 @@ body {
   .chip {
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors;
   }
+  /* 内容壳：对齐稿面约 1320px；宽度直接写，避免 @apply 自定义 token 失效 */
+  .shell {
+    width: 100%;
+    max-width: 82.5rem;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  @media (min-width: 640px) {
+    .shell {
+      padding-left: 2rem;
+      padding-right: 2rem;
+    }
+  }
+  @media (min-width: 1024px) {
+    .shell {
+      padding-left: 2.5rem;
+      padding-right: 2.5rem;
+    }
+  }
+
+  /* 主内容区顶部青蓝影院光晕 */
+  .main-ambient-bg {
+    background-image:
+      radial-gradient(ellipse 75% 38% at 50% -8%, rgba(6, 182, 212, 0.14), transparent),
+      radial-gradient(ellipse 45% 25% at 50% 0%, rgba(59, 130, 246, 0.08), transparent);
+    background-repeat: no-repeat;
+  }
+
+  /* 左侧毛玻璃侧栏 */
+  .glass-sidebar {
+    background: rgba(13, 17, 26, 0.88);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    transition: width 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  :root:not(.dark) .glass-sidebar {
+    background: rgba(255, 255, 255, 0.92);
+    border-right-color: rgb(var(--c-line));
+  }
+
+  .sidebar-nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: rgb(var(--c-muted));
+    transition: color 0.2s ease, background 0.2s ease;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-align: left;
+  }
+  .sidebar-nav-item:hover {
+    color: rgb(var(--c-content));
+    background: rgba(255, 255, 255, 0.05);
+  }
+  :root:not(.dark) .sidebar-nav-item:hover {
+    background: rgb(var(--c-hover));
+  }
+  .sidebar-nav-item.active {
+    color: rgb(var(--c-content));
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  :root:not(.dark) .sidebar-nav-item.active {
+    background: rgb(var(--c-chip));
+    box-shadow: none;
+  }
+  .sidebar-nav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 18px;
+    border-radius: 0 4px 4px 0;
+    background: var(--accent-gradient, linear-gradient(135deg, #06B6D4 0%, #3B82F6 100%));
+    box-shadow: 0 0 8px rgba(6, 182, 212, 0.65);
+  }
+  .sidebar-collapsed .sidebar-label {
+    opacity: 0;
+    width: 0;
+    pointer-events: none;
+  }
+  .sidebar-collapsed .sidebar-nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .sidebar-label {
+    transition: opacity 0.18s ease, width 0.18s ease;
+    overflow: hidden;
+  }
+
+  /* 一体化搜索壳 */
+  .search-shell {
+    background: rgba(255, 255, 255, 0.045);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.45);
+  }
+  :root:not(.dark) .search-shell {
+    background: rgb(var(--c-surface));
+    border-color: rgb(var(--c-line));
+    box-shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.12);
+  }
+  .search-shell:focus-within {
+    background: rgba(255, 255, 255, 0.065);
+    border-color: rgba(56, 189, 248, 0.55);
+    box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.14), 0 16px 36px -8px rgba(0, 0, 0, 0.7);
+  }
+  :root:not(.dark) .search-shell:focus-within {
+    border-color: rgb(var(--c-accent));
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12), 0 12px 28px -10px rgba(15, 23, 42, 0.18);
+  }
+
+  .btn-gradient {
+    background: var(--accent-gradient, linear-gradient(135deg, #06B6D4 0%, #3B82F6 100%));
+    color: #fff;
+    transition: filter 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 2px 10px rgba(6, 182, 212, 0.28);
+  }
+  .btn-gradient:hover {
+    filter: brightness(1.08);
+    transform: translateY(-0.5px);
+    box-shadow: 0 4px 14px rgba(6, 182, 212, 0.4);
+  }
+  .btn-gradient:active {
+    transform: translateY(0);
+  }
+
+  .segmented-track {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 4px;
+    display: inline-flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    max-width: 100%;
+    scrollbar-width: none;
+  }
+  .segmented-track::-webkit-scrollbar {
+    display: none;
+  }
+  :root:not(.dark) .segmented-track {
+    background: rgb(var(--c-chip));
+    border-color: rgb(var(--c-line));
+  }
+  .tab-pill {
+    position: relative;
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--c-muted));
+    white-space: nowrap;
+    transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    cursor: pointer;
+  }
+  .tab-pill:hover {
+    color: rgb(var(--c-content));
+  }
+  .tab-pill.active {
+    background: rgba(255, 255, 255, 0.11);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+  :root:not(.dark) .tab-pill.active {
+    background: rgb(var(--c-surface));
+    color: rgb(var(--c-content));
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+
+  .poster-card-frame {
+    position: relative;
+    aspect-ratio: 2 / 3;
+    border-radius: 12px;
+    overflow: hidden;
+    background-color: #131722;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.32s ease;
+  }
+  :root:not(.dark) .poster-card-frame {
+    background-color: rgb(var(--c-chip));
+  }
+  .poster-card-frame::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 12px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.11);
+    pointer-events: none;
+    transition: box-shadow 0.3s ease;
+  }
+  .movie-item:hover .poster-card-frame {
+    transform: translateY(-5px);
+    box-shadow: 0 18px 34px -10px rgba(0, 0, 0, 0.8), 0 0 20px -6px rgba(6, 182, 212, 0.22);
+  }
+  .movie-item:hover .poster-card-frame::after {
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.45);
+  }
+  .movie-item:hover .poster-artwork {
+    transform: scale(1.04);
+  }
+  .poster-artwork {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .rating-pill {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 7px;
+    border-radius: 8px;
+    background: rgba(9, 11, 16, 0.68);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #fbbf24;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  .play-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(9, 11, 16, 0.85) 0%, rgba(9, 11, 16, 0.25) 45%, transparent 100%);
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .movie-item:hover .play-overlay {
+    opacity: 1;
+  }
+  .play-circle {
+    width: 44px;
+    height: 44px;
+    border-radius: 9999px;
+    background: rgba(6, 182, 212, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    transform: scale(0.88);
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow: 0 8px 20px rgba(6, 182, 212, 0.45);
+  }
+  .movie-item:hover .play-circle {
+    transform: scale(1);
+  }
+  /* 分段下划线筛选：替代满屏实心胶囊 */
+  .filter-tab {
+    @apply relative inline-flex items-center px-3 py-2 text-sm text-muted transition-colors;
+    @apply hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-md;
+  }
+  .filter-tab-active {
+    @apply text-content font-medium;
+  }
+  .filter-tab-active::after {
+    content: '';
+    position: absolute;
+    left: 0.65rem;
+    right: 0.65rem;
+    bottom: 0;
+    height: 2px;
+    border-radius: 9999px;
+    background: rgb(var(--c-accent));
+  }
+  .section-title {
+    font-family: var(--font-display), var(--font-sans), 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-size: 1.125rem;
+    line-height: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    color: rgb(var(--c-content));
+  }
+  @media (min-width: 640px) {
+    .section-title {
+      font-size: 1.25rem;
+      line-height: 1.75rem;
+    }
+  }
+  /* 海报网格：对齐稿面 2 / 3 / 5 / 7 列 */
+  .poster-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  @media (min-width: 640px) {
+    .poster-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1.125rem;
+    }
+  }
+  @media (min-width: 768px) {
+    .poster-grid {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 1.25rem;
+    }
+  }
+  @media (min-width: 1180px) {
+    .poster-grid {
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 1.125rem;
+    }
+  }
   .scrollbar-thin::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -133,13 +491,34 @@ body {
   color: rgb(var(--c-on-accent)) !important;
 }
 
-/* 品牌渐变字（沿用旧版 LibreTV 的霓虹蓝→霓虹粉） */
+/* 设置页内容台：亮色下用实体表面，避免白透明叠在浅底上看不清 */
+.settings-stage {
+  background: rgba(255, 255, 255, 0.025);
+}
+:root:not(.dark) .settings-stage {
+  background: rgb(var(--c-surface));
+  border-color: rgb(var(--c-line));
+  box-shadow: 0 16px 40px -24px rgba(15, 23, 42, 0.18);
+}
+
+/* 品牌渐变字：青 → 天蓝 → 玫红（对齐最新稿） */
 .brand-gradient {
-  background: linear-gradient(to right, #00ccff, #ff3c78);
+  background: linear-gradient(115deg, #38bdf8 0%, #7dd3fc 42%, #fb7185 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+}
+
+/* 首屏交错入场：配合 animation-delay 使用 */
+.reveal-delay-1 { animation-delay: 60ms; }
+.reveal-delay-2 { animation-delay: 140ms; }
+.reveal-delay-3 { animation-delay: 220ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-reveal-up {
+    animation: none !important;
+  }
 }
 
 /* LIVE 呼吸红点（直播页标识） */
@@ -191,6 +570,15 @@ body {
  * 只在窄于 640px 时收起这两个控件——手机横屏、平板仍有空间，可以保留。
  * 切集在任何情况下都还能用播放器下方的按钮。
  */
+/*
+ * 进度条命中区：库默认 --art-progress-height: 6px，内条还只有一半，
+ * 点击极易落空；加高命中区，视觉条仍靠库的 hover 拉高到 100%。
+ */
+.art-video-player {
+  --art-progress-height: 16px;
+  --art-progress-top-gap: 12px;
+}
+
 @media (max-width: 640px) {
   /* 竖屏空间只够放「播放 + 时间 + 设置 + 网页全屏 + 全屏」：
      音量交给系统按键，截图与画中画在手机上很少用，一并收起，

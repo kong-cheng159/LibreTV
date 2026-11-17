@@ -1,12 +1,11 @@
 'use client';
 
-import { Header } from '@/components/header';
+import { AppShell } from '@/components/app-shell';
 import { SiteFooter } from '@/components/site-footer';
 
 export default function AboutPage() {
   return (
-    <div className="min-h-screen flex flex-col">
-      <Header />
+    <AppShell>
       <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-10 space-y-8">
         <section>
           <h1 className="text-xl font-bold text-content mb-3">关于 LibreTV</h1>
@@ -45,6 +44,6 @@ export default function AboutPage() {
         </section>
       </main>
       <SiteFooter />
-    </div>
+    </AppShell>
   );
 }

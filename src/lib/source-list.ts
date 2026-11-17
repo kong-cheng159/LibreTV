@@ -23,6 +23,35 @@ export function normalizeSubscriptionUrl(raw: string): string {
   return raw.trim().replace(/[?#]+$/, '').replace(/\/+$/, '');
 }
 
+/**
+ * 批量订阅地址解析：按换行 / 逗号 / 分号切开，再按空白拆开同一行里的多条 URL；
+ * 归一化后去重。非法片段进 invalid，合法 http(s) 地址进 urls（保持出现顺序）。
+ */
+export function parseSubscriptionUrls(raw: string): { urls: string[]; invalid: string[] } {
+  const chunks = raw
+    .split(/[\n\r,;]+/)
+    .flatMap((part) => part.trim().split(/\s+/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const urls: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+
+  for (const chunk of chunks) {
+    if (!/^https?:\/\/.+/.test(chunk)) {
+      invalid.push(chunk);
+      continue;
+    }
+    const url = normalizeSubscriptionUrl(chunk);
+    if (seen.has(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+
+  return { urls, invalid };
+}
+
 interface RawItem {
   name?: unknown;
   url?: unknown;

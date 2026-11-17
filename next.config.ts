@@ -15,9 +15,10 @@ function readAppVersion(): string {
 }
 
 const nextConfig: NextConfig = {
-  // standalone 输出仅供 Docker 镜像构建使用（DOCKER_BUILD=1）；
-  // 本地 next start 在 standalone 模式下不受支持，故按环境切换
-  output: process.env.DOCKER_BUILD === '1' ? 'standalone' : undefined,
+  // standalone 仅在 Docker 镜像（DOCKER_BUILD=1）或桌面安装包（DESKTOP_BUILD=1）时输出。
+  // 本地 next start 不支持 standalone，故按环境切换。
+  output:
+    process.env.DOCKER_BUILD === '1' || process.env.DESKTOP_BUILD === '1' ? 'standalone' : undefined,
   reactStrictMode: true,
   env: { APP_VERSION: readAppVersion() },
   // 采集站/豆瓣等上游地址在运行时由用户配置，构建期无法枚举，关闭图片优化改用 <img>

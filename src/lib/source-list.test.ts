@@ -5,6 +5,7 @@ import {
   normalizeSubscriptionUrl,
   normalizeUrl,
   parseSourceListPayload,
+  parseSubscriptionUrls,
 } from './source-list';
 
 const vod = (url: string, extra: Record<string, unknown> = {}) => ({ name: `源 ${url}`, url, ...extra });
@@ -189,5 +190,37 @@ describe('normalizeSubscriptionUrl', () => {
     expect(normalizeSubscriptionUrl('https://a.example.com/list.json?token=abc')).toBe(
       'https://a.example.com/list.json?token=abc'
     );
+  });
+});
+
+describe('parseSubscriptionUrls', () => {
+  it('按换行 / 逗号 / 分号拆分并去重归一化', () => {
+    const raw = `
+      https://a.example.com/a.json/
+      https://b.example.com/b.json,https://c.example.com/c.json;
+      https://a.example.com/a.json
+    `;
+    expect(parseSubscriptionUrls(raw)).toEqual({
+      urls: ['https://a.example.com/a.json', 'https://b.example.com/b.json', 'https://c.example.com/c.json'],
+      invalid: [],
+    });
+  });
+
+  it('同一行空白分隔的多条 URL 也能识别', () => {
+    expect(parseSubscriptionUrls('https://a.example.com/a.json https://b.example.com/b.json')).toEqual({
+      urls: ['https://a.example.com/a.json', 'https://b.example.com/b.json'],
+      invalid: [],
+    });
+  });
+
+  it('非法片段进入 invalid，合法地址仍继续导入', () => {
+    expect(parseSubscriptionUrls('ftp://x.example.com/a.json\nhttps://ok.example.com/list.json\nnot-a-url')).toEqual({
+      urls: ['https://ok.example.com/list.json'],
+      invalid: ['ftp://x.example.com/a.json', 'not-a-url'],
+    });
+  });
+
+  it('空输入得到空结果', () => {
+    expect(parseSubscriptionUrls('   \n  ')).toEqual({ urls: [], invalid: [] });
   });
 });

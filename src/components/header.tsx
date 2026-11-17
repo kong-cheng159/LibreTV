@@ -42,11 +42,22 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
 
   return (
     <>
-      <header className="sticky top-0 z-40 bg-surface/90 backdrop-blur border-b border-line">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-2 sm:gap-3">
-          <Link href="/" aria-label="LibreTV 首页" className="flex items-center shrink-0">
+      <header className="sticky top-0 z-40 border-b border-line/80 bg-surface/75 backdrop-blur-xl">
+        <div className="shell h-14 flex items-center gap-2 sm:gap-3">
+          <Link
+            href="/"
+            aria-label="LibreTV 首页"
+            className="flex items-center gap-2.5 shrink-0 group"
+          >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/icons/icon-512.png" alt="LibreTV" className="w-7 h-7 rounded-lg" />
+            <img
+              src="/icons/icon-512.png"
+              alt=""
+              className="w-7 h-7 rounded-lg ring-1 ring-line/80 transition-transform group-hover:scale-[1.04]"
+            />
+            <span className="font-display text-[1.05rem] font-semibold tracking-tight brand-gradient leading-none">
+              LibreTV
+            </span>
           </Link>
 
           {showSearch && (
@@ -196,11 +207,17 @@ function HeaderLink({ href, active, children }: { href: string; active: boolean;
     <Link
       href={href}
       className={cn(
-        'px-2.5 py-1.5 rounded-md text-sm transition-colors',
-        active ? 'text-content bg-hover' : 'text-muted hover:text-content'
+        'relative px-2.5 py-1.5 text-sm transition-colors',
+        active ? 'text-content' : 'text-muted hover:text-content'
       )}
     >
       {children}
+      {active && (
+        <span
+          aria-hidden
+          className="absolute left-2.5 right-2.5 -bottom-0.5 h-0.5 rounded-full bg-accent"
+        />
+      )}
     </Link>
   );
 }

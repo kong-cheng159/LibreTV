@@ -1,9 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useRouter } from 'next/navigation';
 import { Drawer } from './drawer';
 import { Icon } from './icon';
 import { useToast } from './toast';
+import { useDownloadSlot } from './download-slot';
 import { db, type DownloadStatus, type DownloadTaskEntry } from '@/lib/db';
 import {
   PauseResumeController,
@@ -23,14 +26,11 @@ import {
 import { Switch } from './settings-shared';
 
 /**
- * 全局下载管理器（UI 采用本站 Drawer 模式）：
- * - 入口：header 下载图标 + 播放页「下载本集」（均派发 window 事件）；
+ * 全局下载管理器：
+ * - 运行时常驻 Providers（enqueueDownload 依赖）；
+ * - UI 优先 portal 到 /downloads 页锚点；无锚点时不再弹抽屉（侧栏改为独立菜单页）。
  * - 并发：全局最多同时进行 3 个任务，其余排队（waiting）；
- * - 断点：已下载分片写入 Cache Storage（网络层断点）；
- *   保存目标（FS Access / 内存）活不过页面刷新，恢复时由用户点击「继续」重新选择。
- * - 「下载完成」不等于「已保存到设备」：内存聚合只能发起浏览器下载、拿不到回执，
- *   这类任务标成「已生成，待保存」并保留 Blob 到记录删除为止，面板给「保存到设备」
- *   重入口；页面刷新后 Blob 必然丢失，只能「重新下载」（issue #977）。
+ * - 「下载完成」不等于「已保存到设备」（issue #977）。
  */
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
@@ -54,7 +54,17 @@ interface RunningHandle {
   hasTarget: boolean;
 }
 
-export function DownloadManager({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+export function DownloadManager({
+  isOpen,
+  onClose,
+  portalTarget = null,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  /** 有锚点时把面板渲染到 /downloads 页，保持单实例运行时 */
+  portalTarget?: HTMLElement | null;
+}) {
+  const panelVisible = isOpen || !!portalTarget;
   const { toast } = useToast();
   const [tasks, setTasks] = useState<DownloadTaskEntry[]>([]);
   const [capability, setCapability] = useState<'fs-access' | 'memory'>('memory');
@@ -243,16 +253,16 @@ export function DownloadManager({ isOpen, onClose }: { isOpen: boolean; onClose:
     };
   }, [refresh, scheduleNext, toast]);
 
-  // 抽屉打开时：刷新保存能力与任务列表，并启动排队中的任务
+  // 面板可见时（抽屉或 /downloads 页）：刷新能力与任务，并启动排队
   useEffect(() => {
-    if (!isOpen) return;
+    if (!panelVisible) return;
     setCapability(detectSavingCapability());
     setChunkCache(supportsChunkCache());
     // 顺带重读下载设置：多标签页下另一处改了开关也能同步过来
     setProxy(loadDownloadSettings().proxy);
     refresh();
     scheduleNext();
-  }, [isOpen, refresh, scheduleNext]);
+  }, [panelVisible, refresh, scheduleNext]);
 
   const onToggleProxy = (next: boolean) => {
     // 以落库结果为准回写 state：存储不可用（隐私模式）时 UI 不能假装已保存
@@ -360,9 +370,9 @@ export function DownloadManager({ isOpen, onClose }: { isOpen: boolean; onClose:
   const entryLabel = (t: DownloadTaskEntry) =>
     t.status === 'completed' && t.savedToDisk === false ? '已生成，待保存' : statusLabel[t.status];
 
-  return (
-    <Drawer open={isOpen} onClose={onClose} title="下载管理" width="max-w-lg">
-      <div className="space-y-3">
+  const panel = (
+    <div className={portalTarget ? 'h-full min-h-0 flex flex-col overflow-hidden' : 'space-y-3'}>
+      <div className={portalTarget ? 'shrink-0 space-y-3 mb-3' : 'contents'}>
         <div className="card p-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm text-content">经服务器中转下载</p>
@@ -379,6 +389,8 @@ export function DownloadManager({ isOpen, onClose }: { isOpen: boolean; onClose:
           {chunkCache ? ' · 支持断点续传' : ' · 当前环境无断点缓存（需 HTTPS 访问）'} ·
           同时进行 {Math.min(running.current.size, MAX_CONCURRENT_DOWNLOADS)}/{MAX_CONCURRENT_DOWNLOADS} 个任务
         </p>
+      </div>
+      <div className={portalTarget ? 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin space-y-3' : 'space-y-3'}>
         {tasks.length === 0 && (
           <div className="py-10 text-center text-sm text-faint">
             暂无下载任务。在播放页点击「下载本集」开始。
@@ -459,6 +471,17 @@ export function DownloadManager({ isOpen, onClose }: { isOpen: boolean; onClose:
           </div>
         ))}
       </div>
+    </div>
+  );
+
+  if (portalTarget) {
+    return createPortal(panel, portalTarget);
+  }
+
+  // 无独立页锚点时仍可用抽屉（旧 Header / 兼容路径）
+  return (
+    <Drawer open={isOpen} onClose={onClose} title="下载管理" width="max-w-lg">
+      {panel}
     </Drawer>
   );
 }
@@ -468,19 +491,28 @@ export function enqueueDownload(payload: AddDownloadPayload): void {
   window.dispatchEvent(new CustomEvent(ADD_TASK_EVENT, { detail: payload }));
 }
 
-/** header 等处调用：打开下载管理器 */
+/** 播放页等处调用：跳到下载管理页（或派发导航事件） */
 export function requestShowDownloadManager(): void {
   window.dispatchEvent(new CustomEvent(SHOW_MANAGER_EVENT));
 }
 
-/** 全局挂载点：根布局渲染一次，监听打开事件 */
+/** 全局挂载点：常驻运行时；UI portal 到 /downloads 锚点；SHOW 事件改为路由跳转 */
 export function GlobalDownloadManager() {
-  const [open, setOpen] = useState(false);
+  const router = useRouter();
+  const { slot } = useDownloadSlot();
+
   useEffect(() => {
-    const onShow = () => setOpen(true);
+    const onShow = () => router.push('/downloads');
     window.addEventListener(SHOW_MANAGER_EVENT, onShow);
     return () => window.removeEventListener(SHOW_MANAGER_EVENT, onShow);
-  }, []);
-  return <DownloadManager isOpen={open} onClose={() => setOpen(false)} />;
+  }, [router]);
+
+  return (
+    <DownloadManager
+      isOpen={false}
+      onClose={() => router.push('/')}
+      portalTarget={slot}
+    />
+  );
 }
 

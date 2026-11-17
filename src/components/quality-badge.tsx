@@ -10,12 +10,15 @@ import type { QualityEntry } from '@/lib/types';
  * 「未探到」与「未知」在数据上都是没有 height，但含义相反：
  * 前者是请求失败可以重试，后者是源站本来就不给信息（单码率/直链）。
  * 所以失败态用琥珀色并渲染为可点击的 button；未知态保持灰 chip 且不可点。
+ *
+ * variant=overlay：压在封面上的角标，实心底 + 加粗，扫一眼就能看见档位。
  */
 export function QualityBadge({
   entry,
   loading,
   onRetry,
   showReason,
+  variant = 'default',
   className,
 }: {
   entry?: QualityEntry;
@@ -24,15 +27,26 @@ export function QualityBadge({
   onRetry?: () => void;
   /** 就地显示失败原因（超时/防盗链/无资源）：触屏看不到 tooltip，需要可见文案 */
   showReason?: boolean;
+  /** overlay = 封面角标（更大、更高对比） */
+  variant?: 'default' | 'overlay';
   className?: string;
 }) {
   const view = describeQualityBadge(entry, loading);
   if (!view) return null;
 
+  const overlay = variant === 'overlay';
+  const base = overlay
+    ? 'inline-flex items-center justify-center shrink-0 rounded-md px-2 py-1 text-[11px] sm:text-xs font-bold tracking-wide shadow-md tabular-nums'
+    : 'tag font-semibold shrink-0 tabular-nums';
+
   if (view.kind === 'loading') {
     return (
       <span
-        className={cn('tag bg-chip text-faint shrink-0 animate-pulse', className)}
+        className={cn(
+          base,
+          overlay ? 'bg-black/75 text-white/80 animate-pulse' : 'bg-chip text-faint animate-pulse',
+          className
+        )}
         title={view.title}
         aria-label="正在探测画质"
       >
@@ -43,16 +57,21 @@ export function QualityBadge({
 
   if (view.kind === 'value') {
     const height = entry?.height ?? 0;
+    const tone = overlay
+      ? height >= 1080
+        ? 'bg-accent text-on-accent ring-1 ring-white/25'
+        : height >= 720
+          ? 'bg-black/85 text-white ring-1 ring-white/20'
+          : 'bg-black/70 text-white/90'
+      : height >= 1080
+        ? 'bg-accent text-on-accent'
+        : height >= 720
+          ? 'bg-accent/20 text-accent'
+          : height > 0 && height < 480
+            ? 'bg-chip text-faint'
+            : 'bg-chip text-muted';
     return (
-      <span
-        className={cn(
-          'tag font-medium shrink-0',
-          // 高画质给强调色；≤480 的标清退到 faint，让它在「源名 / 画质 / 集数」里自然后置
-          height >= 1080 ? 'bg-accent/15 text-accent' : height > 0 && height < 480 ? 'bg-chip text-faint' : 'bg-chip text-muted',
-          className
-        )}
-        title={view.title}
-      >
+      <span className={cn(base, tone, className)} title={view.title}>
         {view.label}
       </span>
     );
@@ -70,7 +89,10 @@ export function QualityBadge({
         }}
         onKeyDown={(e) => e.stopPropagation()}
         className={cn(
-          'tag font-medium shrink-0 bg-warning/15 text-warning hover:bg-warning/25 transition-colors',
+          base,
+          overlay
+            ? 'bg-warning-solid text-white hover:brightness-110 transition-[filter]'
+            : 'bg-warning/15 text-warning hover:bg-warning/25 transition-colors',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/40',
           className
         )}
@@ -85,7 +107,17 @@ export function QualityBadge({
 
   return (
     <span
-      className={cn('tag shrink-0', view.kind === 'failed' ? 'bg-warning/15 text-warning' : 'bg-chip text-faint', className)}
+      className={cn(
+        base,
+        view.kind === 'failed'
+          ? overlay
+            ? 'bg-warning-solid text-white'
+            : 'bg-warning/15 text-warning'
+          : overlay
+            ? 'bg-black/70 text-white/80'
+            : 'bg-chip text-faint',
+        className
+      )}
       title={view.title}
     >
       {view.kind === 'failed' ? view.label ?? '未测到' : '未知'}

@@ -1,6 +1,22 @@
 import type { Metadata, Viewport } from 'next';
+import { Noto_Sans_SC, Outfit } from 'next/font/google';
 import './globals.css';
 import { Providers } from '@/components/providers';
+
+/** 展示字：品牌与大标题；拉丁字符气质，中文回落到 Noto Sans SC */
+const fontDisplay = Outfit({
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap',
+});
+
+/** 正文字：中英兼顾，替代系统默认栈 */
+const fontSans = Noto_Sans_SC({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  variable: '--font-sans',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: {
@@ -24,14 +40,14 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0b101a',
+  themeColor: '#090B10',
   width: 'device-width',
   initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang="zh-CN" className={`${fontDisplay.variable} ${fontSans.variable}`} suppressHydrationWarning>
       <head>
         {/* 首屏前同步主题，避免亮暗闪烁 */}
         <script
@@ -41,7 +57,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
-      <body>
+      <body className="font-sans">
         <Providers>{children}</Providers>
       </body>
     </html>

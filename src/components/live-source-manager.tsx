@@ -107,61 +107,51 @@ export function LiveSourceManager() {
   const empty = store.liveEnvSources.length === 0 && store.liveSubscriptions.length === 0;
 
   return (
-    <section>
-      <SectionTitle
-        title="直播源"
-        hint={empty ? 'M3U 订阅 · /live 页面播放' : `共 ${store.liveEnvSources.length + store.liveSubscriptions.length} 个 · 已启用 ${store.liveSelectedUrls.length}`}
-        extra={
-          <button className="btn-primary btn-sm" onClick={() => setAdding(true)}>
-            <Icon name="plus" className="w-3.5 h-3.5" />
-            添加直播源
-          </button>
-        }
-      />
-
-      {/* 与点播源一致：由「+ 添加 / 编辑」按钮展开同一表单，而非常驻占位 */}
-      <LiveSourceForm
-        visible={adding || editingSource !== undefined}
-        initial={editingSource}
-        onCancel={() => {
-          setAdding(false);
-          setEditing(null);
-        }}
-        onSubmit={(data) => {
-          if (editing) {
-            // 编辑模式：只更新名称与 EPG（地址不可改）
-            store.updateLiveSubscription(editing, { name: data.name, epg: data.epg });
-          } else {
-            store.addLiveSubscription(data.url, data.name, data.epg);
-            void runTest(data.url, () => api.liveTest(data.url));
-          }
-          setAdding(false);
-          setEditing(null);
-        }}
-      />
-
-      {empty && !adding && editingSource === undefined ? (
-        <EmptyState
-          icon="link"
-          title="还没有添加任何直播源"
-          description="添加 M3U 地址后即可在「直播」页按分组浏览与播放频道；也可在「数据源订阅」中一次导入点播源与直播源；部署者还可通过 DEFAULT_LIVE_SOURCES 环境变量预置。"
-          action={
+    <section className="h-full min-h-0 flex flex-col overflow-hidden">
+      <div className="shrink-0 space-y-3">
+        <SectionTitle
+          title="直播源"
+          hint={empty ? 'M3U 订阅 · /live 页面播放' : `共 ${store.liveEnvSources.length + store.liveSubscriptions.length} 个 · 已启用 ${store.liveSelectedUrls.length}`}
+          extra={
             <button className="btn-primary btn-sm" onClick={() => setAdding(true)}>
-              添加第一个直播源
+              <Icon name="plus" className="w-3.5 h-3.5" />
+              添加直播源
             </button>
           }
         />
-      ) : (
-        <>
-          <div className="space-y-2 mb-3">
+
+        <LiveSourceForm
+          visible={adding || editingSource !== undefined}
+          initial={editingSource}
+          onCancel={() => {
+            setAdding(false);
+            setEditing(null);
+          }}
+          onSubmit={(data) => {
+            if (editing) {
+              store.updateLiveSubscription(editing, { name: data.name, epg: data.epg });
+            } else {
+              store.addLiveSubscription(data.url, data.name, data.epg);
+              void runTest(data.url, () => api.liveTest(data.url));
+            }
+            setAdding(false);
+            setEditing(null);
+          }}
+        />
+
+        {!empty && (
+          <div className="rounded-xl border border-white/[0.06] bg-black/20 p-3 sm:p-3.5 space-y-3">
             <SearchInput value={query} onChange={setQuery} placeholder="搜索名称或地址" />
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
               {LIVE_FILTERS.map((f) => (
                 <button
                   key={f.id}
+                  type="button"
                   className={cn(
-                    'chip',
-                    filter === f.id ? 'bg-accent/10 text-accent font-medium' : 'text-muted hover:text-content hover:bg-hover'
+                    'px-2.5 py-1 rounded-lg text-[12px] font-medium transition-colors',
+                    filter === f.id
+                      ? 'bg-accent/15 text-accent ring-1 ring-accent/25'
+                      : 'text-muted hover:text-content hover:bg-white/[0.05]'
                   )}
                   onClick={() => setFilter(f.id)}
                   aria-pressed={filter === f.id}
@@ -175,11 +165,25 @@ export function LiveSourceManager() {
               {allEnabled ? '全部停用' : '全部启用'}
             </button>
           </div>
+        )}
+      </div>
 
-          {rows.length === 0 ? (
-            <EmptyState variant="plain" title="没有符合条件的源" />
-          ) : (
-            <ul className="space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin mt-4">
+        {empty && !adding && editingSource === undefined ? (
+          <EmptyState
+            icon="link"
+            title="还没有添加任何直播源"
+            description="添加 M3U 地址后即可在「直播」页按分组浏览与播放频道；也可在「数据源订阅」中一次导入点播源与直播源；部署者还可通过 DEFAULT_LIVE_SOURCES 环境变量预置。"
+            action={
+              <button className="btn-primary btn-sm" onClick={() => setAdding(true)}>
+                添加第一个直播源
+              </button>
+            }
+          />
+        ) : rows.length === 0 ? (
+          <EmptyState variant="plain" title="没有符合条件的源" />
+        ) : (
+          <ul className="space-y-2 pb-1">
               {rows.map((row) => {
                 const enabled = store.liveSelectedUrls.includes(row.url);
                 const fromSubscription = row.fromSubscriptions.length > 0;
@@ -283,9 +287,8 @@ export function LiveSourceManager() {
                 );
               })}
             </ul>
-          )}
-        </>
-      )}
+        )}
+      </div>
     </section>
   );
 }
