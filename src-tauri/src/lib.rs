@@ -1,3 +1,5 @@
+mod download_write;
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,6 +14,8 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use url::Url;
 use uuid::Uuid;
+
+use download_write::DownloadWriteState;
 
 const DESKTOP_PORT: u16 = 47321;
 const DEV_PORT: u16 = 18080;
@@ -44,10 +48,20 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SidecarState {
             child: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![save_text_file])
+        .manage(DownloadWriteState::default())
+        .invoke_handler(tauri::generate_handler![
+            save_text_file,
+            download_write::desktop_download_pick,
+            download_write::desktop_download_open,
+            download_write::desktop_download_write,
+            download_write::desktop_download_close,
+            download_write::desktop_download_abort,
+        ])
         .setup(|app| {
             let opener_url_ok = |url: &Url| {
                 if allow_in_app(url) {

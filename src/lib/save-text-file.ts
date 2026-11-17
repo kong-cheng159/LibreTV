@@ -13,10 +13,52 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+async function saveViaBrowserDownload(filename: string, contents: string): Promise<SaveTextFileResult> {
+  const blob = new Blob([contents], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  triggerBrowserDownload(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { path: null, mode: 'download' };
+}
+
+async function saveViaFsAccess(
+  filename: string,
+  getContents: () => Promise<string>,
+  extDots: string[]
+): Promise<SaveTextFileResult | null> {
+  if (!supportsFileSystemAccess()) return null;
+  try {
+    const picker = (
+      window as unknown as {
+        showSaveFilePicker: (opts: {
+          suggestedName: string;
+          types?: { description: string; accept: Record<string, string[]> }[];
+        }) => Promise<{ createWritable: () => Promise<WritableStream> }>;
+      }
+    ).showSaveFilePicker;
+    // 先弹窗，保住点击手势；再生成内容并写入
+    const handle = await picker({
+      suggestedName: filename,
+      types: [{ description: 'JSON', accept: { 'application/json': extDots } }],
+    });
+    const contents = await getContents();
+    const writable = await handle.createWritable();
+    const writer = writable.getWriter();
+    await writer.write(new TextEncoder().encode(contents));
+    await writer.close();
+    return { path: filename, mode: 'fs-access' };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new UserCancelledError();
+    }
+    return null;
+  }
+}
+
 /**
  * 把文本保存到用户选定的位置。
- * - 桌面壳：系统「另存为」
- * - 浏览器：优先 File System Access（必须在用户手势内先弹窗，所以内容用 getContents 延后生成）
+ * - 桌面壳：系统「另存为」（IPC 失败时回退下载）
+ * - 浏览器：优先 File System Access
  * - 再不行：浏览器下载
  * 用户取消时抛出 UserCancelledError。
  */
@@ -31,50 +73,29 @@ export async function saveTextFile(options: {
   const extDots = extensions.map((ext) => (ext.startsWith('.') ? ext : `.${ext}`));
 
   if (isTauriRuntime()) {
-    const contents = await options.getContents();
-    const { invoke } = await import('@tauri-apps/api/core');
-    const path = await invoke<string | null>('save_text_file', {
-      defaultName: filename,
-      contents,
-      extensions,
-    });
-    if (path == null) throw new UserCancelledError();
-    return { path, mode: 'desktop-dialog' };
-  }
-
-  if (supportsFileSystemAccess()) {
     try {
-      const picker = (
-        window as unknown as {
-          showSaveFilePicker: (opts: {
-            suggestedName: string;
-            types?: { description: string; accept: Record<string, string[]> }[];
-          }) => Promise<{ createWritable: () => Promise<WritableStream> }>;
-        }
-      ).showSaveFilePicker;
-      // 先弹窗，保住点击手势；再生成内容并写入
-      const handle = await picker({
-        suggestedName: filename,
-        types: [{ description: 'JSON', accept: { 'application/json': extDots } }],
-      });
       const contents = await options.getContents();
-      const writable = await handle.createWritable();
-      const writer = writable.getWriter();
-      await writer.write(new TextEncoder().encode(contents));
-      await writer.close();
-      return { path: filename, mode: 'fs-access' };
+      const { invoke } = await import('@tauri-apps/api/core');
+      const path = await invoke<string | null>('save_text_file', {
+        defaultName: filename,
+        contents,
+        extensions,
+      });
+      if (path == null) throw new UserCancelledError();
+      return { path, mode: 'desktop-dialog' };
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        throw new UserCancelledError();
-      }
-      // 选择器不可用时落到下载
+      if (err instanceof UserCancelledError) throw err;
+      // ACL / 远程页面未放行时 invoke 会失败；回退到 FS Access 或下载，避免整页「导出失败」
+      const viaFs = await saveViaFsAccess(filename, options.getContents, extDots);
+      if (viaFs) return viaFs;
+      const contents = await options.getContents();
+      return saveViaBrowserDownload(filename, contents);
     }
   }
 
+  const viaFs = await saveViaFsAccess(filename, options.getContents, extDots);
+  if (viaFs) return viaFs;
+
   const contents = await options.getContents();
-  const blob = new Blob([contents], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  triggerBrowserDownload(url, filename);
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  return { path: null, mode: 'download' };
+  return saveViaBrowserDownload(filename, contents);
 }

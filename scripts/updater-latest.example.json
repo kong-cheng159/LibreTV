@@ -1,0 +1,11 @@
+{
+  "version": "2.23.3",
+  "notes": "修复导出与下载落盘；支持应用内更新。",
+  "pub_date": "2026-11-17T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "（粘贴 LibreTV_x.y.z_x64-setup.exe.sig 文件全文）",
+      "url": "https://github.com/kong-cheng159/LibreTV/releases/download/v2.23.3/LibreTV_2.23.3_x64-setup.exe"
+    }
+  }
+}

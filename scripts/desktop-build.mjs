@@ -45,8 +45,10 @@ async function copyInstallersToAppDir() {
     throw new Error(`未找到 NSIS 产物目录：${NSIS_BUNDLE_DIR}\n${err instanceof Error ? err.message : err}`);
   }
 
-  const setups = entries.filter((name) => name.toLowerCase().endsWith('.exe'));
-  if (setups.length === 0) {
+  const setups = entries.filter(
+    (name) => name.toLowerCase().endsWith('.exe') || name.toLowerCase().endsWith('.sig')
+  );
+  if (!setups.some((name) => name.toLowerCase().endsWith('.exe'))) {
     throw new Error(`NSIS 目录里没有 .exe：${NSIS_BUNDLE_DIR}`);
   }
 
@@ -62,6 +64,13 @@ async function copyInstallersToAppDir() {
 
 const version = await syncDesktopVersion();
 console.log(`开始构建 LibreTV ${version} 的 Windows 安装包`);
+
+if (!process.env.TAURI_SIGNING_PRIVATE_KEY && !process.env.TAURI_SIGNING_PRIVATE_KEY_PATH) {
+  console.warn(
+    '未设置 TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PATH：安装包可构建，但不会生成 .sig，应用内更新不可用。'
+  );
+  console.warn('详见 src-tauri/keys/README.txt');
+}
 
 try {
   await runTauriBuild();

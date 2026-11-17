@@ -384,7 +384,10 @@ export function DownloadManager({
           <Switch checked={proxy} onChange={onToggleProxy} label="经服务器中转下载" />
         </div>
         <p className="text-xs text-faint">
-          保存能力：{capability === 'fs-access' ? '磁盘直写（边下边存）' : '内存聚合（完成后浏览器下载）'}
+          保存能力：
+          {capability === 'fs-access'
+            ? '磁盘直写（桌面为系统另存为；浏览器为文件选择器）'
+            : '内存聚合（完成后浏览器下载）'}
           {capability === 'memory' && '，浏览器不回报是否已保存'}
           {chunkCache ? ' · 支持断点续传' : ' · 当前环境无断点缓存（需 HTTPS 访问）'} ·
           同时进行 {Math.min(running.current.size, MAX_CONCURRENT_DOWNLOADS)}/{MAX_CONCURRENT_DOWNLOADS} 个任务

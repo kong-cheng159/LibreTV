@@ -17,6 +17,11 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# Tauri 更新签名私钥（切勿入库；公钥已写入 tauri.conf.json）
+src-tauri/keys/*.key
+!src-tauri/keys/*.key.pub
+!src-tauri/keys/README.txt
+
 # 操作系统 / 编辑器杂文件
 .DS_Store
 Thumbs.db
@@ -43,6 +48,10 @@ generated-images/
 # Rust / Tauri 构建产物
 src-tauri/target/
 src-tauri/gen/
+
+# 一期仅 Windows；tauri icon 顺带生成的移动端图标不入库
+src-tauri/icons/android/
+src-tauri/icons/ios/
 
 # 下载的 Node sidecar（体积大，由 npm run desktop:prepare 拉取）
 src-tauri/binaries/*

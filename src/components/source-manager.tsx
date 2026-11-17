@@ -30,6 +30,7 @@ import { PERSIST_KEY } from '@/lib/persist-storage';
 import { copyToClipboard } from '@/lib/clipboard';
 import { useAuth } from './auth';
 import { api } from '@/lib/client-api';
+import { DesktopUpdaterPanel } from './desktop-updater';
 import {
   AUTO_REFRESH_MAX_FAIL_STREAK,
   importLocalSourceListFile,
@@ -48,7 +49,7 @@ import { describeParseStats } from '@/lib/tvbox-parser';
  */
 
 type PrimaryTab = 'sources' | 'prefs' | 'data';
-type SecondaryTab = 'vod' | 'live' | 'subs' | 'playback' | 'image' | 'home' | 'io';
+type SecondaryTab = 'vod' | 'live' | 'subs' | 'playback' | 'image' | 'home' | 'io' | 'update';
 
 const PRIMARY_TABS: { id: PrimaryTab; label: string; icon: IconName }[] = [
   { id: 'sources', label: '源管理', icon: 'link' },
@@ -69,6 +70,14 @@ const SECONDARY_TABS: Record<PrimaryTab, { id: SecondaryTab; label: string }[]> 
   ],
   data: [{ id: 'io', label: '配置导入导出' }],
 };
+
+function dataSecondaryTabs(): { id: SecondaryTab; label: string }[] {
+  const tabs: { id: SecondaryTab; label: string }[] = [{ id: 'io', label: '配置导入导出' }];
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    tabs.push({ id: 'update', label: '桌面更新' });
+  }
+  return tabs;
+}
 
 const TAB_STORAGE_KEY = 'libretv-settings-tab';
 
@@ -127,7 +136,7 @@ export function SettingsWorkspace({
   }, [primary, secondary]);
 
   const current = secondary[primary];
-  const secondaryTabs = SECONDARY_TABS[primary];
+  const secondaryTabs = primary === 'data' ? dataSecondaryTabs() : SECONDARY_TABS[primary];
   const panel = (
     <>
       {current === 'vod' && <VodSourcesPanel />}
@@ -137,6 +146,7 @@ export function SettingsWorkspace({
       {current === 'home' && <HomePanel />}
       {current === 'subs' && <SourceSubscriptions />}
       {current === 'io' && <ConfigIoPanel />}
+      {current === 'update' && <DesktopUpdaterPanel />}
     </>
   );
 
@@ -1544,7 +1554,10 @@ function ConfigIoPanel() {
 
   return (
     <section className="h-full min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin">
-      <SectionTitle title="配置导入导出" hint="导出/导入包含数据源、订阅与偏好设置的整机配置" />
+      <SectionTitle
+        title="配置导入导出"
+        hint="导出/导入含源与偏好、观看历史、播放进度、搜索历史、直播测活与下载队列元数据"
+      />
       <div className="flex gap-2">
         <button className="btn-ghost flex-1 text-xs" onClick={doExport}>
           导出配置
@@ -1601,15 +1614,21 @@ function summarizeConfig(text: string): string {
       /* 设置片段损坏时忽略该部分统计 */
     }
   }
-  const historyRaw = cfg.data?.['viewingHistory'];
-  if (typeof historyRaw === 'string') {
+  const countArrayField = (key: string, label: string) => {
+    const raw = cfg.data?.[key];
+    if (raw == null) return;
     try {
-      const h = JSON.parse(historyRaw);
-      if (Array.isArray(h)) parts.push(`${h.length} 条观看历史`);
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Array.isArray(parsed)) parts.push(`${parsed.length} ${label}`);
     } catch {
       /* 忽略 */
     }
-  }
+  };
+  countArrayField('viewingHistory', '条观看历史');
+  countArrayField('playbackProgress', '条播放进度');
+  countArrayField('searchHistory', '条搜索历史');
+  countArrayField('liveProbe', '条直播测活');
+  countArrayField('downloads', '条下载任务');
   return parts.length > 0 ? `该文件包含 ${parts.join('、')}` : '该文件未包含可导入的数据';
 }
 

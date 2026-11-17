@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-save-text-file"
+description = "允许前端调用 save_text_file，弹出系统另存为并写入本地文本"
+commands.allow = ["save_text_file"]
+
+[[permission]]
+identifier = "allow-desktop-download-write"
+description = "允许前端流式下载直写到用户选定的本地文件"
+commands.allow = [
+  "desktop_download_pick",
+  "desktop_download_open",
+  "desktop_download_write",
+  "desktop_download_close",
+  "desktop_download_abort"
+]
