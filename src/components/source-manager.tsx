@@ -353,7 +353,7 @@ function VodSourcesPanel() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<VodFilter>('all');
   const { tests, runTest } = useSourceTests();
-  const { progress, probe, cancel, isProbing } = useSourceProbe();
+  const { progress, probe, cancel, isProbing, concurrency } = useSourceProbe();
 
   const envKeys = useMemo(() => new Set(store.envSources.map((s) => s.key)), [store.envSources]);
   const all = useMemo(() => [...store.envSources, ...store.customAPIs], [store.envSources, store.customAPIs]);
@@ -486,7 +486,7 @@ function VodSourcesPanel() {
                 </div>
                 <span className="tabular-nums shrink-0">
                   {progress.done}/{progress.total} · 可用 {progress.ok}
-                  {formatEta(progress.done, progress.total, progress.startedAt)}
+                  {formatEta(progress.done, progress.total, progress.startedAt)} · {concurrency} 路并发
                 </span>
                 <button className="btn-ghost btn-sm shrink-0" onClick={cancel}>
                   取消
@@ -715,6 +715,12 @@ function PlaybackPanel() {
           description="单集播放结束后自动播放下一集"
           checked={store.autoplayNext}
           onChange={(v) => store.updateSettings({ autoplayNext: v })}
+        />
+        <ToggleRow
+          label="隐私模式"
+          description="开启后不再写入观看历史、播放进度、搜索历史、直播最近观看和追剧行为；已有记录不会被删除，关闭后可继续使用。"
+          checked={store.privacyMode}
+          onChange={(v) => store.updateSettings({ privacyMode: v })}
         />
         <ToggleRow
           label="自动跳过片段"

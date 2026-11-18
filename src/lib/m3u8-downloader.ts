@@ -53,6 +53,8 @@ export interface DownloadProgress {
   percentage: number;
   status: 'downloading' | 'processing' | 'done' | 'error';
   message?: string;
+  downloadedBytes: number;
+  totalBytes?: number;
 }
 
 /**
@@ -194,27 +196,30 @@ async function runStreamingJob(ctx: {
   pause: PauseResumeController;
   signal: AbortSignal;
   total: number;
-  report: (current: number, total: number, status: DownloadProgress['status']) => void;
+  report: (current: number, total: number, status: DownloadProgress['status'], downloadedBytes?: number) => void;
 }): Promise<void> {
   const { parsed, format, aesKey, target, pause, signal, total, report } = ctx;
   // MP4 转封装同样是流式的：push 一片立刻产出 fMP4 片段写出，无需聚合整集
   const transmuxer =
     format === 'MP4' ? new StreamingTransmuxer(target, { durationSeconds: parsed.totalDuration }) : undefined;
+  let downloadedBytes = 0;
   for (let i = 1; i <= total; i++) {
     if (signal.aborted) return;
     await pause.waitIfPaused();
     const buffer = await fetchSegmentWithRetry(parsed.segments[i - 1].url, i, signal);
     if (!buffer) return;
     let data: ArrayBuffer = buffer;
+    downloadedBytes += buffer.byteLength;
     if (aesKey && parsed.aesConf) {
       data = await decryptSegment(buffer, aesKey, parsed.aesConf.iv, parsed.mediaSequence, i - 1);
     }
     if (transmuxer) await transmuxer.pushAndTransmux(new Uint8Array(data));
     else await target.write(new Uint8Array(data));
-    report(i, total, 'downloading');
+    report(i, total, 'downloading', downloadedBytes);
   }
   if (transmuxer) await transmuxer.finish();
   else await target.close();
+  report(total, total, 'done', downloadedBytes);
 }
 
 /**
@@ -254,13 +259,15 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
   const hardStop = new AbortController();
   const jobSignal = AbortSignal.any([signal, hardStop.signal]);
 
-  const report = (current: number, total: number, status: DownloadProgress['status'], message?: string) => {
+  const report = (current: number, total: number, status: DownloadProgress['status'], downloadedBytes = 0, totalBytes?: number, message?: string) => {
     onProgress({
       current,
       total,
       percentage: total > 0 ? Math.round((current / total) * 100) : 0,
       status,
       message,
+      downloadedBytes,
+      totalBytes,
     });
   };
 
@@ -286,7 +293,7 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
   if (parsed.byterange) throw new Error('该集使用 BYTERANGE 分片，暂不支持下载');
 
   const total = parsed.segments.length;
-  report(0, total, 'downloading');
+  report(0, total, 'downloading', 0);
 
   // —— AES key 预取 ——
   let aesKey: ArrayBuffer | undefined;
@@ -299,8 +306,7 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
   // —— 无 Cache Storage（HTTP 页面 / 老浏览器）：退化为串行「边下边写」 ——
   // 没有断点、并发为 1，但功能可用；原先这条路径是直接失败的
   if (!supportsChunkCache()) {
-    await runStreamingJob({ parsed, format, aesKey, target, pause, signal: jobSignal, total, report });
-    if (!jobSignal.aborted) report(total, total, 'done');
+    await runStreamingJob({ parsed, format, aesKey, target, pause, signal: jobSignal, total, report: (current, count, status, bytes = 0) => report(current, count, status, bytes) });
     return;
   }
 
@@ -310,10 +316,15 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
   let cursor = 0;
   // 恢复：统计已有分片数作为起点
   let current = 0;
+  let downloadedBytes = 0;
   for (let i = 1; i <= total; i++) {
-    if (await cache.match(new Request(chunkKey(i)))) current += 1;
+    const cached = await cache.match(new Request(chunkKey(i)));
+    if (cached) {
+      current += 1;
+      downloadedBytes += Number(cached.headers.get('content-length')) || (await cached.clone().arrayBuffer()).byteLength;
+    }
   }
-  report(current, total, 'downloading');
+  report(current, total, 'downloading', downloadedBytes);
 
   const worker = async (): Promise<void> => {
     while (true) {
@@ -345,7 +356,8 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
         );
       }
       current += 1;
-      report(current, total, 'downloading');
+      downloadedBytes += buffer.byteLength;
+      report(current, total, 'downloading', downloadedBytes);
     }
   };
   try {
@@ -358,7 +370,7 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
   if (jobSignal.aborted) return;
 
   // —— 顺序写出（转封装 / 拼接） ——
-  report(total, total, 'processing');
+  report(total, total, 'processing', downloadedBytes, downloadedBytes);
   if (format === 'MP4') {
     // 传入整集时长：mux.js 恒把 moov 时长写成 0xFFFFFFFF（timescale 90000
     // → 播放器显示 13:15:21），必须在写出 initSegment 前回填真实值
@@ -389,5 +401,5 @@ export async function runDownloadJob(opts: DownloadJobOptions): Promise<void> {
     }
     await target.close();
   }
-  report(total, total, 'done');
+  report(total, total, 'done', downloadedBytes, downloadedBytes);
 }

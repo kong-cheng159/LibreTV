@@ -4,6 +4,11 @@ description = "允许前端调用 save_text_file，弹出系统另存为并写�
 commands.allow = ["save_text_file"]
 
 [[permission]]
+identifier = "allow-open-system-player"
+description = "允许前端将 HTTP(S) 媒体地址交给系统默认播放器"
+commands.allow = ["open_system_player"]
+
+[[permission]]
 identifier = "allow-desktop-download-write"
 description = "允许前端流式下载直写到用户选定的本地文件"
 commands.allow = [

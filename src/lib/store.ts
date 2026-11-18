@@ -24,6 +24,8 @@ export interface AppSettings {
   /** 用户是否在设置中主动选择过推荐数据源；为 false 时部署者的 DEFAULT_RECOMMEND_SOURCE 默认值可生效 */
   recommendSourceTouched: boolean;
   autoplayNext: boolean;
+  /** 隐私模式：不记录观看、进度、搜索、直播最近观看与追剧行为。 */
+  privacyMode: boolean;
   /**
    * 音量放大（Web Audio 增益链，约 1.8 倍）：默认关闭。
    * 增益与 video.volume 相乘，对所有音量档位生效，会整体抬高响度，
@@ -380,6 +382,7 @@ export const useAppStore = create<AppState>()(
       recommendSource: 'hot-list',
       recommendSourceTouched: false,
       autoplayNext: true,
+      privacyMode: false,
       // 音量放大默认关闭：开启后对所有音量档位整体抬高约 1.8 倍，交给用户显式选择
       volumeBoost: false,
       // 细进度条默认开启：这是多年既有行为，新增的只是「可以关掉」的入口
@@ -944,7 +947,8 @@ export const useAppStore = create<AppState>()(
       // v10：直播上次观看频道 liveLastChannel。
       // v11：出站 HTTP(S) 代理（outboundProxyEnabled / outboundProxyUrl）。
       // 此前未声明 version 的存量数据会被视为 v0 并走 migrate 补齐。
-      version: 11,
+      // v12：新增隐私模式（privacyMode），旧数据默认关闭。
+      version: 12,
       migrate: (persisted, version) => {
         const state = { ...((persisted ?? {}) as Partial<AppState>) };
         if (!Array.isArray(state.liveRecent)) state.liveRecent = [];
@@ -954,6 +958,7 @@ export const useAppStore = create<AppState>()(
         }
         if (!Array.isArray(state.liveSubscriptions)) state.liveSubscriptions = [];
         if (!Array.isArray(state.watchlist)) state.watchlist = [];
+        if (typeof state.privacyMode !== 'boolean') state.privacyMode = false;
         if (typeof state.outboundProxyEnabled !== 'boolean') state.outboundProxyEnabled = false;
         if (typeof state.outboundProxyUrl !== 'string' || !state.outboundProxyUrl.trim()) {
           state.outboundProxyUrl = 'http://127.0.0.1:7890';
@@ -1033,6 +1038,7 @@ export const useAppStore = create<AppState>()(
         recommendSource: s.recommendSource,
         recommendSourceTouched: s.recommendSourceTouched,
         autoplayNext: s.autoplayNext,
+        privacyMode: s.privacyMode,
         volumeBoost: s.volumeBoost,
         miniProgressBar: s.miniProgressBar,
         skipMarks: s.skipMarks,

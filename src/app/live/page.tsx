@@ -138,7 +138,8 @@ function LiveContent() {
       if (c.tvgId) sp.set('tvgId', c.tvgId);
       if (c.epg) sp.set('epg', c.epg);
       router.replace(`/live?${sp.toString()}`, { scroll: false });
-      useAppStore.getState().addLiveRecent({
+      const appState = useAppStore.getState();
+      if (!appState.privacyMode) appState.addLiveRecent({
         url: c.url,
         name: c.name,
         logo: c.logo,

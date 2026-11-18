@@ -3,6 +3,7 @@ import { guardRequest } from '@/lib/api-guard';
 import { checkUpstreamAllowed } from '@/lib/ssrf';
 import { fetchUpstream } from '@/lib/fetch-utils';
 import { parseSearchList } from '@/lib/cms-parser';
+import { withHostLimit } from '@/lib/host-gate';
 
 export const runtime = 'nodejs';
 
@@ -29,10 +30,13 @@ export async function POST(req: Request) {
 
   const start = Date.now();
   try {
-    const res = await fetchUpstream(`${url}?ac=videolist&wd=test`, {
-      timeoutMs: 6000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36', Accept: 'application/json' },
-    });
+    const res = await withHostLimit(url, () =>
+      fetchUpstream(`${url}?ac=videolist&wd=test`, {
+        timeoutMs: 6000,
+        signal: req.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36', Accept: 'application/json' },
+      })
+    );
     const ms = Date.now() - start;
     if (!res.ok) {
       return NextResponse.json({ ok: false, ms, error: `HTTP ${res.status}` });

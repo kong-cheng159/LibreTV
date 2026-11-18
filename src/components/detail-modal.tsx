@@ -95,7 +95,7 @@ export function DetailModal({ item, onClose }: { item: SearchResultItem | null; 
 
   const play = (index: number) => {
     if (!detail || !detail.episodes[index]) return;
-    addSearchHistory(item.name).catch(() => {});
+    if (!useAppStore.getState().privacyMode) addSearchHistory(item.name).catch(() => {});
     router.push(
       buildWatchUrl({
         sourceKey: item.sourceKey,

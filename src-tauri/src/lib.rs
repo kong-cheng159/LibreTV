@@ -56,6 +56,7 @@ pub fn run() {
         .manage(DownloadWriteState::default())
         .invoke_handler(tauri::generate_handler![
             save_text_file,
+            open_system_player,
             download_write::desktop_download_pick,
             download_write::desktop_download_open,
             download_write::desktop_download_write,
@@ -113,6 +114,16 @@ pub fn run() {
                 kill_sidecar(app);
             }
         });
+}
+
+/// 将 HTTP(S) 媒体地址交给系统默认关联程序。严格限制协议，避免把任意本地命令或文件交给 opener。
+#[tauri::command]
+fn open_system_player(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|_| "播放地址无效".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("仅支持 HTTP(S) 播放地址".to_string());
+    }
+    opener::open(parsed.as_str()).map_err(|err| format!("无法调用系统播放器：{err}"))
 }
 
 /// 站内导航留在窗口里。Tauri 在 Windows 上用 http://tauri.localhost 提供启动页，

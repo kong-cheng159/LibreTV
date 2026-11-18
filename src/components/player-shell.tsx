@@ -16,7 +16,15 @@ import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
 import { seekTimeFromClientX } from '@/lib/progress-seek';
+import { decodeSubtitleBytes, subtitleFormatOf, subtitleToVtt } from '@/lib/subtitle';
+import {
+  classifyPlaybackFailure,
+  formatDiagnosticRate,
+  sanitizePlaybackUrl,
+  type PlaybackFailureStage,
+} from '@/lib/playback-diagnostics';
 import { Icon } from '@/components/icon';
+import { openInSystemPlayer } from '@/lib/system-player';
 import {
   findActiveSegment,
   findCrossedEnding,
@@ -35,6 +43,26 @@ import {
 
 /** 片段时间统一保留 1 位小数：与面板展示保持一致，避免浮点尾巴 */
 const round1 = (v: number) => Math.round(v * 10) / 10;
+
+interface PlaybackDiagnostics {
+  url: string;
+  mode: '直连' | '代理';
+  protocol: string;
+  resolution: string;
+  videoCodec: string;
+  audioCodec: string;
+  hlsLevel: string;
+  bufferSeconds: number;
+  downloadRate?: number;
+  droppedFrames?: number;
+  totalFrames?: number;
+  fps?: number;
+  mediaBitrate?: number;
+  decodeErrors: number;
+  sourceHealth?: string;
+  lastFailure?: { stage: PlaybackFailureStage; type: string; details: string };
+  lastRecovery?: string;
+}
 
 /**
  * 播放器外壳：ArtPlayer + hls.js（旧版 player.js 的 React 化）。
@@ -106,11 +134,14 @@ interface PlayerShellProps {
   onQuality?: (height: number) => void;
   /** 恢复策略判源不可用（重试耗尽/格式硬失败）时回调：父级弹出换源面板 */
   onRequestSwitchSource?: (reason: string) => void;
+  /** 只展开/定位换源面板，不立即自动切换。 */
+  onOpenSwitchPanel?: () => void;
   /** 控制条上的上一集 / 下一集：不在播放器里也能切集，省得回到页面按钮 */
   onPrevEpisode?: () => void;
   onNextEpisode?: () => void;
   hasPrevEpisode?: boolean;
   hasNextEpisode?: boolean;
+  sourceHealth?: string;
 }
 
 export function PlayerShell({
@@ -135,15 +166,19 @@ export function PlayerShell({
   onPause,
   onQuality,
   onRequestSwitchSource,
+  onOpenSwitchPanel,
   onPrevEpisode,
   onNextEpisode,
   hasPrevEpisode,
   hasNextEpisode,
+  sourceHealth,
 }: PlayerShellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const artRef = useRef<any>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const localSubtitleUrlRef = useRef<string | null>(null);
+  const localTrackRef = useRef<HTMLTrackElement | null>(null);
   const volumeBoostRef = useRef<VolumeBoostHandle | null>(null);
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
@@ -156,6 +191,22 @@ export function PlayerShell({
   const [buffering, setBuffering] = useState(false);
   /** 缓冲超过约 4s：露出换源入口 */
   const [bufferingLong, setBufferingLong] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>({
+    url,
+    mode: url.startsWith('/api/proxy') ? '代理' : '直连',
+    protocol: '未知',
+    resolution: '未知',
+    videoCodec: '未知',
+    audioCodec: '未知',
+    hlsLevel: '自动',
+    bufferSeconds: 0,
+    decodeErrors: 0,
+  });
+  const lastFailureRef = useRef<PlaybackDiagnostics['lastFailure']>(undefined);
+  const lastRecoveryRef = useRef<string | undefined>(undefined);
+  const decodeErrorsRef = useRef(0);
+  const frameSampleRef = useRef<{ frames: number; at: number } | undefined>(undefined);
   const bufferingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 续播定位提示：可点「从头播放」 */
   const [resumeOffer, setResumeOffer] = useState<number | null>(null);
@@ -176,6 +227,56 @@ export function PlayerShell({
   const sleepUntilEndRef = useRef(false);
   const brightnessRef = useRef(1);
   const aspectModeRef = useRef<AspectMode>('default');
+
+  const clearLocalSubtitle = () => {
+    localTrackRef.current?.remove();
+    localTrackRef.current = null;
+    if (localSubtitleUrlRef.current) URL.revokeObjectURL(localSubtitleUrlRef.current);
+    localSubtitleUrlRef.current = null;
+  };
+
+  const loadLocalSubtitle = async (file: File) => {
+    const format = subtitleFormatOf(file.name);
+    if (!format) {
+      showHint('仅支持 SRT / ASS / SSA / VTT 字幕');
+      return;
+    }
+    const art = artRef.current;
+    if (!art?.video) return;
+    try {
+      const text = decodeSubtitleBytes(await file.arrayBuffer());
+      const vtt = subtitleToVtt(text, format);
+      clearLocalSubtitle();
+      const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt;charset=utf-8' }));
+      const track = document.createElement('track');
+      track.kind = 'subtitles';
+      track.label = file.name;
+      track.srclang = 'zh';
+      track.src = url;
+      track.default = true;
+      art.video.appendChild(track);
+      localSubtitleUrlRef.current = url;
+      localTrackRef.current = track;
+      track.addEventListener('load', () => {
+        for (const item of Array.from(art.video.textTracks as TextTrackList)) item.mode = 'disabled';
+        if (track.track) track.track.mode = 'showing';
+      }, { once: true });
+      showHint(`已加载字幕：${file.name}`);
+    } catch (error) {
+      showHint(error instanceof Error ? `字幕加载失败：${error.message}` : '字幕加载失败');
+    }
+  };
+
+  const chooseLocalSubtitle = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.srt,.ass,.ssa,.vtt,text/vtt';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (file) void loadLocalSubtitle(file);
+    }, { once: true });
+    input.click();
+  };
 
   const clearBuffering = () => {
     setBuffering(false);
@@ -224,15 +325,15 @@ export function PlayerShell({
     url, title, adFilter, autoplayNext, skipMark, autoSkipSegments, volumeBoost, miniProgressBar,
     pendingStart, onPendingStart, onPlayerApi, onRecordSegment,
     episodeKey, nextUrl, nextEpisodeKey,
-    getRestorePosition, onTimeUpdate, onEnded, onPause, onQuality, onRequestSwitchSource,
-    onPrevEpisode, onNextEpisode, hasPrevEpisode, hasNextEpisode,
+    getRestorePosition, onTimeUpdate, onEnded, onPause, onQuality, onRequestSwitchSource, onOpenSwitchPanel,
+    onPrevEpisode, onNextEpisode, hasPrevEpisode, hasNextEpisode, sourceHealth,
   });
   propsRef.current = {
     url, title, adFilter, autoplayNext, skipMark, autoSkipSegments, volumeBoost, miniProgressBar,
     pendingStart, onPendingStart, onPlayerApi, onRecordSegment,
     episodeKey, nextUrl, nextEpisodeKey,
-    getRestorePosition, onTimeUpdate, onEnded, onPause, onQuality, onRequestSwitchSource,
-    onPrevEpisode, onNextEpisode, hasPrevEpisode, hasNextEpisode,
+    getRestorePosition, onTimeUpdate, onEnded, onPause, onQuality, onRequestSwitchSource, onOpenSwitchPanel,
+    onPrevEpisode, onNextEpisode, hasPrevEpisode, hasNextEpisode, sourceHealth,
   };
 
   /** 上报实测画质：多次上报取大值由调用方决定，这里只管把拿到的高度传出去 */
@@ -588,6 +689,15 @@ export function PlayerShell({
     restoreCleanupRef.current = null;
     hlsRef.current?.destroy();
     currentMediaUrlRef.current = mediaUrl;
+    setDiagnostics((current) => ({
+      ...current,
+      url: mediaUrl,
+      mode: mediaUrl.startsWith('/api/proxy') ? '代理' : '直连',
+      protocol: (() => {
+        try { return new URL(mediaUrl, location.href).protocol.replace(':', '').toUpperCase(); }
+        catch { return '未知'; }
+      })(),
+    }));
     const hls = new Hls(buildHlsConfig());
     hlsRef.current = hls;
 
@@ -646,6 +756,26 @@ export function PlayerShell({
     hls.on(Hls.Events.LEVEL_SWITCHED, () => {
       updateHlsQualitySetting(hls);
     });
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+      if (!artRef.current?.setting || hls.audioTracks.length === 0) return;
+      const selector = hls.audioTracks.map((track, index) => ({
+        html: track.name || track.lang || `音轨 ${index + 1}`,
+        value: index,
+        default: index === hls.audioTrack,
+      }));
+      const option = {
+        name: 'hls-audio-track',
+        html: '音轨',
+        width: 170,
+        tooltip: selector[hls.audioTrack]?.html ?? '默认',
+        selector,
+        onSelect(item: { html: string | HTMLElement; value?: number }) {
+          if (typeof item.value === 'number') hls.audioTrack = item.value;
+          return typeof item.html === 'string' ? item.html : '默认';
+        },
+      };
+      try { artRef.current.setting.update(option); } catch { artRef.current.setting.add(option); }
+    });
     // 播放链路恢复（FRAG_LOADED / MANIFEST_PARSED）：静默窗外清零连续失败计数
     hls.on(Hls.Events.FRAG_LOADED, () => recoveryRef.current?.markHealthy());
     // 单码率源在 MANIFEST 阶段拿不到 height（清单尚未解析），这里补一次。
@@ -660,6 +790,12 @@ export function PlayerShell({
     });
 
     hls.on(Hls.Events.ERROR, (_evt, data) => {
+      lastFailureRef.current = {
+        stage: classifyPlaybackFailure(data.type, data.details),
+        type: data.type || 'unknown',
+        details: data.details || 'unknown',
+      };
+      if (classifyPlaybackFailure(data.type, data.details) === 'decode') decodeErrorsRef.current += 1;
       if (!data.fatal) return;
       const recovery = recoveryRef.current;
       if (!recovery) return;
@@ -676,15 +812,18 @@ export function PlayerShell({
             (decision.attempt >= 2 || data.details === 'manifestLoadError')
           ) {
             showHint('直连失败，改用代理重试...');
+            lastRecoveryRef.current = '直连失败，切换代理重试';
             setupHls(video, `/api/proxy?url=${encodeURIComponent(mediaUrl)}`, false);
             return;
           }
           showHint(`${decision.reason}（第 ${decision.attempt} 次）...`);
+          lastRecoveryRef.current = `${decision.reason}：第 ${decision.attempt} 次重试`;
           recovery.schedule(decision.delayMs, () => hls.startLoad());
           break;
         }
         case 'recover-media': {
           showHint(`${decision.reason}（第 ${decision.attempt} 次）...`);
+          lastRecoveryRef.current = `${decision.reason}：恢复媒体解码${decision.swapAudio ? '并切换音频编码' : ''}`;
           if (decision.swapAudio) hls.swapAudioCodec?.();
           hls.recoverMediaError();
           break;
@@ -728,6 +867,10 @@ export function PlayerShell({
     getVideoPrefetcher().stop();
     setError('');
     setShowPoster(true);
+    lastFailureRef.current = undefined;
+    lastRecoveryRef.current = undefined;
+    decodeErrorsRef.current = 0;
+    frameSampleRef.current = undefined;
     const art = artRef.current;
     if (!art) return;
     setupHls(art.video, targetUrl, true);
@@ -765,7 +908,7 @@ export function PlayerShell({
       // 对齐点播：开启画中画；截图/AirPlay/网页全屏仍关闭；倍速进设置 + 控制条轮换
       pip: true,
       autoMini: true,
-      screenshot: false,
+      screenshot: true,
       setting: true,
       playbackRate: false,
       aspectRatio: false,
@@ -888,6 +1031,15 @@ export function PlayerShell({
             syncAspectControl(this, next);
             showHint(`画面 ${ASPECT_LABELS[next]}`);
           },
+        },
+        {
+          name: 'local-subtitle',
+          index: 22,
+          position: 'right',
+          html: '字幕',
+          tooltip: '加载本地字幕',
+          style: { padding: '0 8px', fontSize: '13px' },
+          click: chooseLocalSubtitle,
         },
       ],
       customType: {
@@ -1513,6 +1665,7 @@ export function PlayerShell({
       Artplayer.CONTROL_HIDE_TIME = ART_DEFAULT_CONTROL_HIDE_MS;
       hlsRef.current?.destroy();
       hlsRef.current = null;
+      clearLocalSubtitle();
       recoveryRef.current?.dispose();
       getVideoPrefetcher().stop();
       // 播放页可能仍持有读取接口：销毁前显式置空，避免「记录当前」读到已销毁实例
@@ -1603,9 +1756,159 @@ export function PlayerShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adFilter]);
 
+  // 播放信息只在面板打开时刷新，避免常驻轮询引起无意义重渲染。
+  useEffect(() => {
+    if (!diagnosticsOpen) return;
+    const refresh = () => {
+      const art = artRef.current;
+      const video = art?.video as HTMLVideoElement | undefined;
+      const hls = hlsRef.current;
+      if (!video) return;
+      const current = video.currentTime;
+      let bufferSeconds = 0;
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= current && video.buffered.end(i) >= current) {
+          bufferSeconds = Math.max(0, video.buffered.end(i) - current);
+          break;
+        }
+      }
+      const levelIndex = hls?.currentLevel ?? -1;
+      const level = levelIndex >= 0 ? hls?.levels[levelIndex] : undefined;
+      const quality = video.getVideoPlaybackQuality?.();
+      const now = performance.now();
+      let fps: number | undefined;
+      if (quality) {
+        const previous = frameSampleRef.current;
+        if (previous && now > previous.at) {
+          fps = Math.max(0, (quality.totalVideoFrames - previous.frames) * 1000 / (now - previous.at));
+        }
+        frameSampleRef.current = { frames: quality.totalVideoFrames, at: now };
+      }
+      setDiagnostics({
+        url: currentMediaUrlRef.current,
+        mode: currentMediaUrlRef.current.startsWith('/api/proxy') ? '代理' : '直连',
+        protocol: (() => {
+          try { return new URL(currentMediaUrlRef.current, location.href).protocol.replace(':', '').toUpperCase(); }
+          catch { return '未知'; }
+        })(),
+        resolution: video.videoWidth && video.videoHeight ? `${video.videoWidth} × ${video.videoHeight}` : '未知',
+        videoCodec: level?.videoCodec || '未知',
+        audioCodec: level?.audioCodec || '未知',
+        hlsLevel: levelIndex < 0 ? '自动' : level?.height ? `${level.height}P（档位 ${levelIndex + 1}）` : `档位 ${levelIndex + 1}`,
+        bufferSeconds: round1(bufferSeconds),
+        downloadRate: hls?.bandwidthEstimate ? hls.bandwidthEstimate / 8 : undefined,
+        droppedFrames: quality?.droppedVideoFrames,
+        totalFrames: quality?.totalVideoFrames,
+        fps,
+        mediaBitrate: level?.bitrate ? level.bitrate / 8 : undefined,
+        decodeErrors: decodeErrorsRef.current,
+        sourceHealth: propsRef.current.sourceHealth,
+        lastFailure: lastFailureRef.current,
+        lastRecovery: lastRecoveryRef.current,
+      });
+    };
+    refresh();
+    const timer = setInterval(refresh, 1000);
+    return () => clearInterval(timer);
+  }, [diagnosticsOpen]);
+
+  const copyDiagnostics = async () => {
+    const report = [
+      `LibreTV 播放诊断`,
+      `标题：${title}`,
+      `地址：${sanitizePlaybackUrl(diagnostics.url)}`,
+      `连接：${diagnostics.mode} / ${diagnostics.protocol}`,
+      `分辨率：${diagnostics.resolution}`,
+      `视频编码：${diagnostics.videoCodec}`,
+      `音频编码：${diagnostics.audioCodec}`,
+      `HLS 清晰度：${diagnostics.hlsLevel}`,
+      `缓冲：${diagnostics.bufferSeconds.toFixed(1)} 秒`,
+      `下载速度：${formatDiagnosticRate(diagnostics.downloadRate)}`,
+      `丢帧：${diagnostics.droppedFrames ?? '未知'} / ${diagnostics.totalFrames ?? '未知'}`,
+      `实时帧率：${diagnostics.fps === undefined ? '未知' : `${diagnostics.fps.toFixed(1)} FPS`}`,
+      `媒体码率：${formatDiagnosticRate(diagnostics.mediaBitrate)}`,
+      `解码错误：${diagnostics.decodeErrors}`,
+      `源健康：${diagnostics.sourceHealth ?? '暂无记录'}`,
+      `最近错误：${diagnostics.lastFailure ? `${diagnostics.lastFailure.stage} / ${diagnostics.lastFailure.type} / ${diagnostics.lastFailure.details}` : '无'}`,
+      `最近恢复：${diagnostics.lastRecovery ?? '无'}`,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(report);
+      showHint('诊断信息已复制');
+    } catch {
+      showHint('复制失败，请检查剪贴板权限');
+    }
+  };
+
+  const copyPlaybackAddress = async () => {
+    try {
+      await navigator.clipboard.writeText(diagnostics.url);
+      showHint('播放地址已复制');
+    } catch {
+      showHint('复制失败，请检查剪贴板权限');
+    }
+  };
+
+  const openSystemPlayer = async () => {
+    try {
+      const opened = await openInSystemPlayer(propsRef.current.url);
+      showHint(opened ? '已交给系统默认播放器' : '系统播放器功能仅桌面客户端可用');
+    } catch (cause) {
+      showHint(cause instanceof Error ? cause.message : '无法调用系统播放器');
+    }
+  };
+
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" style={{ WebkitTouchCallout: 'none' }} />
+      <button
+        type="button"
+        className="absolute right-3 top-3 z-[18] rounded-full bg-black/65 px-3 py-1.5 text-xs text-white transition-colors hover:bg-black/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        onClick={() => setDiagnosticsOpen((open) => !open)}
+        aria-expanded={diagnosticsOpen}
+      >
+        播放信息
+      </button>
+      {diagnosticsOpen && (
+        <div className="absolute right-3 top-12 z-[19] w-[min(23rem,calc(100%-1.5rem))] rounded-xl border border-white/15 bg-black/90 p-3 text-xs text-white shadow-2xl backdrop-blur">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <strong className="text-sm">播放诊断</strong>
+            <button type="button" className="rounded bg-white/15 px-2 py-1 hover:bg-white/25" onClick={copyDiagnostics}>复制诊断</button>
+          </div>
+          <dl className="grid grid-cols-[5rem_minmax(0,1fr)] gap-x-2 gap-y-1.5">
+            <dt className="text-white/55">连接</dt><dd>{diagnostics.mode} · {diagnostics.protocol}</dd>
+            <dt className="text-white/55">播放地址</dt><dd className="truncate" title={sanitizePlaybackUrl(diagnostics.url)}>{sanitizePlaybackUrl(diagnostics.url)}</dd>
+            <dt className="text-white/55">分辨率</dt><dd>{diagnostics.resolution}</dd>
+            <dt className="text-white/55">视频编码</dt><dd>{diagnostics.videoCodec}</dd>
+            <dt className="text-white/55">音频编码</dt><dd>{diagnostics.audioCodec}</dd>
+            <dt className="text-white/55">HLS 档位</dt><dd>{diagnostics.hlsLevel}</dd>
+            <dt className="text-white/55">缓冲时长</dt><dd>{diagnostics.bufferSeconds.toFixed(1)} 秒</dd>
+            <dt className="text-white/55">下载速度</dt><dd>{formatDiagnosticRate(diagnostics.downloadRate)}</dd>
+            <dt className="text-white/55">丢帧</dt><dd>{diagnostics.droppedFrames ?? '未知'} / {diagnostics.totalFrames ?? '未知'}</dd>
+            <dt className="text-white/55">实时帧率</dt><dd>{diagnostics.fps === undefined ? '未知' : `${diagnostics.fps.toFixed(1)} FPS`}</dd>
+            <dt className="text-white/55">媒体码率</dt><dd>{formatDiagnosticRate(diagnostics.mediaBitrate)}</dd>
+            <dt className="text-white/55">解码错误</dt><dd>{diagnostics.decodeErrors}</dd>
+            <dt className="text-white/55">源健康</dt><dd>{diagnostics.sourceHealth ?? '暂无记录'}</dd>
+            <dt className="text-white/55">最近错误</dt><dd>{diagnostics.lastFailure ? `${diagnostics.lastFailure.stage} · ${diagnostics.lastFailure.details}` : '无'}</dd>
+            <dt className="text-white/55">最近恢复</dt><dd>{diagnostics.lastRecovery ?? '无'}</dd>
+          </dl>
+          <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
+            <button type="button" className="rounded bg-white/15 px-2 py-1.5 hover:bg-white/25" onClick={() => loadEpisode(currentMediaUrlRef.current || propsRef.current.url)}>重试当前线路</button>
+            <button
+              type="button"
+              className="rounded bg-white/15 px-2 py-1.5 hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={(currentMediaUrlRef.current || propsRef.current.url).startsWith('/api/proxy')}
+              onClick={() => setupHls(artRef.current.video, `/api/proxy?url=${encodeURIComponent(currentMediaUrlRef.current || propsRef.current.url)}`, false)}
+            >
+              经代理重试
+            </button>
+            <button type="button" className="rounded bg-white/15 px-2 py-1.5 hover:bg-white/25" onClick={() => propsRef.current.onRequestSwitchSource?.('手动诊断换源')}>自动换源</button>
+            <button type="button" className="rounded bg-white/15 px-2 py-1.5 hover:bg-white/25" onClick={copyPlaybackAddress}>复制播放地址</button>
+            <button type="button" className="col-span-2 rounded bg-white/15 px-2 py-1.5 hover:bg-white/25" onClick={() => propsRef.current.onOpenSwitchPanel?.()}>打开换源面板</button>
+            <button type="button" className="col-span-2 rounded bg-white/15 px-2 py-1.5 hover:bg-white/25" onClick={openSystemPlayer}>使用系统播放器打开</button>
+          </div>
+        </div>
+      )}
       {showPoster && !error && (
         <div
           className="absolute inset-0 bg-black pointer-events-none"

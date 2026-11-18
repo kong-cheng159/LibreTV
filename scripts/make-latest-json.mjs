@@ -31,8 +31,7 @@ const url = `https://github.com/${REPO}/releases/download/${tag}/${setup}`;
 
 const latest = {
   version,
-  notes:
-    '新增可开关的出站 HTTP 代理（Clash 等）；圆角图标与分类浏览优化。建议本机覆盖安装，数据会保留。',
+  notes: process.env.UPDATER_NOTES?.trim() || `LibreTV ${version} 更新。安装后会保留现有数据。`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

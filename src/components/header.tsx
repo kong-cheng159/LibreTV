@@ -10,6 +10,7 @@ import { requestShowDownloadManager } from './download-manager';
 import { Icon, type IconName } from './icon';
 import { SearchHistoryDropdown, useSearchHistory } from './search-history';
 import { cn } from '@/lib/utils';
+import { useAppStore } from '@/lib/store';
 
 /** 顶部导航：Logo、搜索框（首页外）、历史、设置 */
 export function Header({ showSearch = false }: { showSearch?: boolean }) {
@@ -22,6 +23,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
   const [query, setQuery] = useState('');
   // 与首页搜索框共用同一套「最近搜索」下拉逻辑
   const searchHistory = useSearchHistory(query);
+  const privacyMode = useAppStore((s) => s.privacyMode);
 
   const closeMenu = () => setMenuOpen(false);
 
@@ -59,6 +61,15 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
               LibreTV
             </span>
           </Link>
+
+          {privacyMode && (
+            <span
+              className="shrink-0 rounded-full border border-accent/40 bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent"
+              title="隐私模式已开启：不会记录观看、搜索和直播最近观看行为"
+            >
+              隐私模式
+            </span>
+          )}
 
           {showSearch && (
             <form

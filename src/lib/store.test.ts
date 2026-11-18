@@ -557,3 +557,25 @@ describe('底部细进度条设置项', () => {
     store().updateSettings({ miniProgressBar: true });
   });
 });
+
+describe('隐私模式设置项', () => {
+  it('默认关闭，并可通过 updateSettings 切换', () => {
+    expect(store().privacyMode).toBe(false);
+    store().updateSettings({ privacyMode: true });
+    expect(store().privacyMode).toBe(true);
+    store().updateSettings({ privacyMode: false });
+  });
+
+  it('会被持久化，并为旧版本数据补上关闭状态', () => {
+    const options = useAppStore.persist.getOptions() as unknown as {
+      version: number;
+      partialize: (s: unknown) => Record<string, unknown>;
+      migrate: (state: unknown, version: number) => { privacyMode: boolean };
+    };
+    expect(options.version).toBe(12);
+    store().updateSettings({ privacyMode: true });
+    expect(options.partialize(store()).privacyMode).toBe(true);
+    expect(options.migrate({}, 11).privacyMode).toBe(false);
+    store().updateSettings({ privacyMode: false });
+  });
+});

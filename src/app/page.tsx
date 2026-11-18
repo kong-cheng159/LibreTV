@@ -199,7 +199,7 @@ function HomeContent() {
       toast('点播源配置不存在，请在设置中重新添加', 'error');
       return;
     }
-    addSearchHistory(item.name).catch(() => {});
+    if (!useAppStore.getState().privacyMode) addSearchHistory(item.name).catch(() => {});
     void (async () => {
       const index = await readHistoryEpisodeIndex(openKey);
       const href = buildWatchUrl({

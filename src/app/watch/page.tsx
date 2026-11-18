@@ -72,6 +72,12 @@ function WatchContent() {
   const directUrl = searchParams.get('url') || '';
   const titleParam = searchParams.get('title') || '';
   const indexParam = parseInt(searchParams.get('index') || '0', 10) || 0;
+  const sourceHealth = useAppStore((s) => s.sourceHealth[sourceKey]);
+  const sourceHealthText = sourceHealth
+    ? sourceHealth.ok
+      ? `正常${sourceHealth.ms === undefined ? '' : ` · ${sourceHealth.ms}ms`}`
+      : `${sourceHealth.timedOut ? '超时' : '异常'}${sourceHealth.error ? ` · ${sourceHealth.error}` : ''}`
+    : undefined;
 
   const [reversed, setReversed] = useState(false);
   const [skipPanelOpen, setSkipPanelOpen] = useState(false);
@@ -178,14 +184,15 @@ function WatchContent() {
   const getRestorePosition = useCallback(async () => {
     const urlPos = parseInt(searchParams.get('position') || '0', 10) || 0;
     if (urlPos > 0) return urlPos;
+    if (store.privacyMode) return 0;
     if (!vodId) return 0;
     const entry = await db.progress.get(progressKeyOf(sourceKey, vodId, currentIndex));
     return entry?.position ?? 0;
-  }, [searchParams, sourceKey, vodId, currentIndex]);
+  }, [searchParams, store.privacyMode, sourceKey, vodId, currentIndex]);
 
   // 写入观看历史（进入页面即记录，进度后续增量更新）
   useEffect(() => {
-    if (!verified || !sourceKey || !currentUrl) return;
+    if (store.privacyMode || !verified || !sourceKey || !currentUrl) return;
     const timer = setTimeout(() => {
       upsertHistory({
         sourceKey,
@@ -202,17 +209,18 @@ function WatchContent() {
     }, 2000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verified, sourceKey, vodId, currentIndex, videoTitle, currentUrl]);
+  }, [store.privacyMode, verified, sourceKey, vodId, currentIndex, videoTitle, currentUrl]);
 
   // 播放中与暂停时的进度落盘逻辑一致，共用同一回调
   const handleProgress = useCallback(
     (position: number, duration: number) => {
+      if (store.privacyMode) return;
       if (vodId) {
         saveProgress(sourceKey, vodId, currentIndex, position, duration).catch(() => {});
         updateHistoryProgress(sourceKey, vodId || currentUrl, position, duration).catch(() => {});
       }
     },
-    [sourceKey, vodId, currentIndex, currentUrl]
+    [store.privacyMode, sourceKey, vodId, currentIndex, currentUrl]
   );
 
   // 连播倒计时：可取消；卸载时清掉，避免离开后仍跳集
@@ -231,7 +239,7 @@ function WatchContent() {
   }, [sourceKey, vodId, currentIndex, clearCountdown]);
 
   const handleEnded = useCallback(() => {
-    if (vodId) clearProgress(sourceKey, vodId, currentIndex).catch(() => {});
+    if (!store.privacyMode && vodId) clearProgress(sourceKey, vodId, currentIndex).catch(() => {});
     if (!store.autoplayNext || currentIndex >= episodes.length - 1) return;
     clearCountdown();
     setNextCountdown(5);
@@ -249,7 +257,7 @@ function WatchContent() {
         return prev - 1;
       });
     }, 1000);
-  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, sourceKey, vodId, clearCountdown]);
+  }, [store.autoplayNext, store.privacyMode, currentIndex, episodes.length, goEpisode, sourceKey, vodId, clearCountdown]);
 
   const tryAutoSwitchSource = useCallback(() => {
     focusSwitchPanel();
@@ -289,6 +297,13 @@ function WatchContent() {
           enqueueDownload({
             url: currentUrl,
             title: videoTitle,
+            videoTitle,
+            cover: detailQuery.data?.videoInfo?.cover,
+            sourceKey,
+            vodId,
+            episodeIndex: currentIndex,
+            episodeTitle: detailQuery.data?.episodeTitles?.[currentIndex],
+            totalEpisodes: episodes.length || 1,
             format: 'MP4',
           });
         }
@@ -306,6 +321,13 @@ function WatchContent() {
         enqueueDownload({
           url,
           title: `${videoTitle}${episodes.length > 1 ? ` 第${i + 1}集` : ''}`,
+          videoTitle,
+          cover: detailQuery.data?.videoInfo?.cover,
+          sourceKey,
+          vodId,
+          episodeIndex: i,
+          episodeTitle: detailQuery.data?.episodeTitles?.[i],
+          totalEpisodes: episodes.length,
           format: 'MP4',
         });
       }
@@ -318,7 +340,7 @@ function WatchContent() {
         'success'
       );
     },
-    [episodes, currentIndex, currentUrl, videoTitle, toast]
+    [episodes, currentIndex, currentUrl, videoTitle, detailQuery.data?.videoInfo?.cover, detailQuery.data?.episodeTitles, sourceKey, vodId, toast]
   );
 
   // 快捷键（Shift+I/O/S/E）记录片段：校验后写入
@@ -411,6 +433,10 @@ function WatchContent() {
                 className={cn('btn-ghost btn-sm', watching && 'text-accent')}
                 aria-pressed={watching}
                 onClick={() => {
+                  if (store.privacyMode) {
+                    toast('隐私模式下不会记录追剧行为', 'info');
+                    return;
+                  }
                   useAppStore.getState().toggleWatchlist({
                     sourceKey,
                     vodId: watchId,
@@ -494,6 +520,8 @@ function WatchContent() {
                     });
                   }}
                   onRequestSwitchSource={tryAutoSwitchSource}
+                  onOpenSwitchPanel={focusSwitchPanel}
+                  sourceHealth={sourceHealthText}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">

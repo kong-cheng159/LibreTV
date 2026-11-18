@@ -6,6 +6,7 @@ import { addSearchHistory, clearSearchHistory, db, removeSearchHistory, restoreS
 import { cn } from '@/lib/utils';
 import { useToast } from './toast';
 import { Icon } from './icon';
+import { useAppStore } from '@/lib/store';
 
 /** 下拉最多展示条数，与 db 层 MAX_SEARCH_HISTORY 保持一致 */
 const HISTORY_LIMIT = 10;
@@ -52,6 +53,7 @@ export function useSearchHistory(input: string) {
 
   /** 记录一次搜索；顺带刷新下拉数据（历史也会在播放页被写入） */
   const record = (text: string) => {
+    if (useAppStore.getState().privacyMode) return;
     addSearchHistory(text)
       .then(() => history.refetch())
       .catch(() => {});

@@ -13,7 +13,8 @@
     "test": "vitest run",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "desktop:prepare": "node scripts/prepare-sidecar.mjs",
-    "desktop:build": "node scripts/desktop-build.mjs"
+    "desktop:build": "node scripts/desktop-build.mjs",
+    "release:desktop": "node scripts/release-desktop.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",

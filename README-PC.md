@@ -104,7 +104,19 @@ npm run desktop:prepare
 
 # 打完整安装包 → 输出到 release/
 npm run desktop:build
+
+# 一键发布桌面热更新（也可用 minor / major / 指定版本号）
+npm run release:desktop -- patch
 ```
+
+首次使用前，在 GitHub 仓库的 Actions Secrets 中配置：
+
+- `TAURI_SIGNING_PRIVATE_KEY`：更新签名私钥全文
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码（无密码时可不配）
+
+一键发布命令要求工作区干净且本地分支已与 `origin` 同步。它会更新版本号、运行
+TypeScript 检查和测试、创建提交与 `v*` tag 并推送；随后 `desktop-updater`
+工作流自动构建并把安装包、签名和 `latest.json` 上传到 GitHub Release。
 
 ### 架构简述
 

@@ -145,6 +145,17 @@ export function AppSidebar({
               <Icon name="download" className={cn('w-[18px] h-[18px] shrink-0', pathname === '/downloads' && 'text-accent')} />
               <span className="sidebar-label">下载管理</span>
             </SidebarLink>
+
+            <SidebarLink
+              href="/local"
+              active={pathname === '/local'}
+              onNavigate={onCloseMobile}
+              collapsed={collapsed}
+              title="本地媒体"
+            >
+              <Icon name="link" className={cn('w-[18px] h-[18px] shrink-0', pathname === '/local' && 'text-accent')} />
+              <span className="sidebar-label">本地媒体</span>
+            </SidebarLink>
           </nav>
         </div>
 

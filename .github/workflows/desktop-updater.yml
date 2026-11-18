@@ -1,0 +1,96 @@
+name: desktop-updater
+
+# 一键桌面热更新发布：本地执行 npm run release:desktop -- patch，
+# 推送版本 tag 后在 Windows runner 构建、签名，并上传到同一个 GitHub Release。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-updater-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: 校验版本与签名密钥
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "v$version") {
+            throw "tag ${{ github.ref_name }} 与 package.json 版本 $version 不一致"
+          }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw '缺少仓库 Secret：TAURI_SIGNING_PRIVATE_KEY'
+          }
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: 构建签名安装包
+        run: npm run desktop:build
+
+      - name: 生成 updater 清单
+        run: node scripts/make-latest-json.mjs
+
+      - name: 校验更新产物
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $setup = Get-ChildItem release -Filter "*$version*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "找不到版本 $version 的安装包" }
+          if (-not (Test-Path "$($setup.FullName).sig")) { throw "找不到 $($setup.Name).sig" }
+          if (-not (Test-Path 'release/latest.json')) { throw '找不到 latest.json' }
+
+      - name: 上传 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibreTV-desktop-${{ github.ref_name }}
+          path: |
+            release/*-setup.exe
+            release/*-setup.exe.sig
+            release/latest.json
+          if-no-files-found: error
+
+      - name: 创建或更新 GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if (-not (gh release view $tag 2>$null)) {
+            gh release create $tag --title $tag --generate-notes
+          }
+          $assets = @(
+            Get-ChildItem release -Filter '*-setup.exe'
+            Get-ChildItem release -Filter '*-setup.exe.sig'
+            Get-Item release/latest.json
+          ) | ForEach-Object FullName
+          gh release upload $tag @assets --clobber

@@ -59,6 +59,14 @@ export interface DownloadTaskEntry {
   id: string;
   /** 播放页 m3u8 地址（直连或代理形式，入队时的原样） */
   url: string;
+  /** 影片级元数据：用于下载中心按影片分组；均为可选以兼容旧记录。 */
+  videoTitle?: string;
+  cover?: string;
+  sourceKey?: string;
+  vodId?: string;
+  episodeIndex?: number;
+  episodeTitle?: string;
+  totalEpisodes?: number;
   title: string;
   /** 输出格式 */
   format: 'TS' | 'MP4';
@@ -72,6 +80,14 @@ export interface DownloadTaskEntry {
   finished: number;
   total: number;
   errorNum: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  bytesPerSecond?: number;
+  estimatedSeconds?: number;
+  startedAt?: number;
+  completedAt?: number;
+  outputPath?: string;
+  errorMessage?: string;
   createdAt: number;
   updatedAt: number;
 }
