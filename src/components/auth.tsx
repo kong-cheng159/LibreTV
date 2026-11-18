@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useQueryClient } from '@tanstack/react-query';
 import { api, onUnauthorized, STATUS_QUERY_KEY } from '@/lib/client-api';
 import { applyEnvPresets } from '@/lib/subscription-sync';
+import { syncOutboundProxyToServer } from '@/lib/outbound-proxy-sync';
 import type { AuthStatusResponse } from '@/lib/types';
 import { useToast } from './toast';
 
@@ -109,8 +110,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           staleTime: 0,
         }));
       if (status) await applyEnvPresets(status, { verified: true });
+      await syncOutboundProxyToServer();
     } catch {
-      // 补拉预置数据失败不影响登录后的正常使用
+      // 补拉预置数据 / 同步代理失败不影响登录后的正常使用
     }
   }, [toast, queryClient]);
 

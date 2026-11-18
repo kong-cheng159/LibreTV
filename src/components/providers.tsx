@@ -10,6 +10,7 @@ import { DownloadSlotProvider } from './download-slot';
 import { useAppStore, hydrateLiveProbeResults } from '@/lib/store';
 import { api, STATUS_QUERY_KEY } from '@/lib/client-api';
 import { applyEnvPresets } from '@/lib/subscription-sync';
+import { syncOutboundProxyToServer } from '@/lib/outbound-proxy-sync';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -36,6 +37,8 @@ export function Providers({ children }: { children: ReactNode }) {
         return queryClient.fetchQuery({ queryKey: STATUS_QUERY_KEY, queryFn: () => api.status() });
       })
       .then((d) => {
+        // 已登录时把本地出站代理偏好推到 Node（重启 sidecar 后内存配置会丢）
+        if (d?.verified) void syncOutboundProxyToServer().catch(() => {});
         // 预置数据（DEFAULT_SOURCES / DEFAULT_LIVE_SOURCES / DEFAULT_SUBSCRIPTIONS）
         // 预置订阅要经鉴权接口拉取，首屏这次可能发生在登录之前而 401 静默失败；
         // 登录成功后由 AuthProvider 再调一次 applyEnvPresets 补齐（函数幂等）

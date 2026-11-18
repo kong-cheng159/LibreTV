@@ -117,6 +117,21 @@ export const api = {
 
   logout: () => request<{ success: boolean }>('/api/auth', { method: 'DELETE' }),
 
+  /** 服务端出站代理（搜索/详情/拉流经 Node 转发时生效） */
+  outboundProxy: {
+    get: () => request<{ enabled: boolean; url: string }>('/api/outbound-proxy'),
+    put: (body: { enabled?: boolean; url?: string }) =>
+      request<{ enabled: boolean; url: string }>('/api/outbound-proxy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    test: () =>
+      request<{ ok: boolean; status?: number; error?: string }>('/api/outbound-proxy/test', {
+        method: 'POST',
+      }),
+  },
+
   /**
    * 聚合搜索。传入 onSource 时走 /api/search?stream=1 的 NDJSON 流：
    * 每个源结算立即回调（健康源结果不再等坏源超时），最终以聚合结果 resolve。

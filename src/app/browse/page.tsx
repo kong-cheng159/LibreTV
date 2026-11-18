@@ -136,13 +136,17 @@ function BrowseContent() {
     <AppShell fill>
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* 顶栏固定：搜索 + 源/分类；列表单独内滚，避免整页被分类标签撑死 */}
-        <div className="relative z-20 shell shrink-0 pt-4 pb-3 space-y-3 border-b border-line/50 bg-page/80 backdrop-blur-md">
+        <div className="relative z-20 shell shrink-0 pt-5 sm:pt-7 pb-3 space-y-3">
           <div className="hidden sm:block">
             <PageSearchBar />
           </div>
           <header>
-            <h1 className="text-lg font-semibold text-content">分类浏览</h1>
-            <p className="text-xs text-muted mt-1">选择点播源后按站点分类翻页浏览影片</p>
+            <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-content">
+              分类浏览
+            </h1>
+            <p className="mt-1.5 text-sm text-muted leading-relaxed">
+              选择点播源后按站点分类翻页浏览影片
+            </p>
           </header>
 
           {sources.length > 0 && (
@@ -232,7 +236,7 @@ function BrowseContent() {
         </div>
 
         {pagecount > 1 && items.length > 0 && (
-          <div className="shell shrink-0 py-3 border-t border-line/50 bg-page/80 backdrop-blur-md flex items-center justify-center gap-3">
+          <div className="shell shrink-0 py-3 flex items-center justify-center gap-3">
             <button
               type="button"
               className="btn-ghost btn-sm"

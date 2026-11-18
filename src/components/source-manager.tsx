@@ -49,7 +49,7 @@ import { describeParseStats } from '@/lib/tvbox-parser';
  */
 
 type PrimaryTab = 'sources' | 'prefs' | 'data';
-type SecondaryTab = 'vod' | 'live' | 'subs' | 'playback' | 'image' | 'home' | 'io' | 'update';
+type SecondaryTab = 'vod' | 'live' | 'subs' | 'playback' | 'image' | 'home' | 'network' | 'io' | 'update';
 
 const PRIMARY_TABS: { id: PrimaryTab; label: string; icon: IconName }[] = [
   { id: 'sources', label: '源管理', icon: 'link' },
@@ -67,6 +67,7 @@ const SECONDARY_TABS: Record<PrimaryTab, { id: SecondaryTab; label: string }[]> 
     { id: 'playback', label: '播放与过滤' },
     { id: 'image', label: '封面图加载' },
     { id: 'home', label: '首页与内容' },
+    { id: 'network', label: '网络代理' },
   ],
   data: [{ id: 'io', label: '配置导入导出' }],
 };
@@ -144,6 +145,7 @@ export function SettingsWorkspace({
       {current === 'playback' && <PlaybackPanel />}
       {current === 'image' && <ImagePanel />}
       {current === 'home' && <HomePanel />}
+      {current === 'network' && <NetworkProxyPanel />}
       {current === 'subs' && <SourceSubscriptions />}
       {current === 'io' && <ConfigIoPanel />}
       {current === 'update' && <DesktopUpdaterPanel />}
@@ -904,6 +906,178 @@ function HomePanel() {
             { value: 'hot-list', label: '影视榜单', hint: '豆瓣周榜 / 百度热播' },
           ]}
         />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 出站代理：Node 侧搜索/详情/拉流不走 Windows「系统代理」，
+ * 需在此填写 Clash 等本地 HTTP 端口并同步到 sidecar。
+ * 关闭路径单独推 enabled:false，不被坏地址挡住。
+ */
+function NetworkProxyPanel() {
+  const store = useAppStore();
+  const { toast } = useToast();
+  const [draftUrl, setDraftUrl] = useState(store.outboundProxyUrl);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => setDraftUrl(store.outboundProxyUrl), [store.outboundProxyUrl]);
+
+  const disableProxy = async () => {
+    if (saving) return;
+    setSaving(true);
+    const prev = store.outboundProxyEnabled;
+    try {
+      await api.outboundProxy.put({ enabled: false });
+      store.updateSettings({ outboundProxyEnabled: false });
+      toast('已关闭出站代理', 'success');
+    } catch (e) {
+      store.updateSettings({ outboundProxyEnabled: prev });
+      toast(e instanceof Error ? e.message : '关闭失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const enableProxy = async (url: string) => {
+    if (saving) return;
+    const nextUrl = url.trim() || 'http://127.0.0.1:7890';
+    setSaving(true);
+    const prevEnabled = store.outboundProxyEnabled;
+    const prevUrl = store.outboundProxyUrl;
+    try {
+      await api.outboundProxy.put({ enabled: true, url: nextUrl });
+      store.updateSettings({ outboundProxyEnabled: true, outboundProxyUrl: nextUrl });
+      setDraftUrl(nextUrl);
+      toast('已启用出站代理', 'success');
+    } catch (e) {
+      store.updateSettings({ outboundProxyEnabled: prevEnabled, outboundProxyUrl: prevUrl });
+      toast(e instanceof Error ? e.message : '启用失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveUrl = async (url: string) => {
+    if (saving) return;
+    const nextUrl = url.trim() || 'http://127.0.0.1:7890';
+    if (nextUrl === store.outboundProxyUrl && store.outboundProxyEnabled) return;
+    if (!store.outboundProxyEnabled) {
+      store.updateSettings({ outboundProxyUrl: nextUrl });
+      setDraftUrl(nextUrl);
+      return;
+    }
+    setSaving(true);
+    const prevUrl = store.outboundProxyUrl;
+    try {
+      await api.outboundProxy.put({ enabled: true, url: nextUrl });
+      store.updateSettings({ outboundProxyUrl: nextUrl });
+      setDraftUrl(nextUrl);
+      toast('代理地址已更新', 'success');
+    } catch (e) {
+      store.updateSettings({ outboundProxyUrl: prevUrl });
+      setDraftUrl(prevUrl);
+      toast(e instanceof Error ? e.message : '保存失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="h-full min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin">
+      <SectionTitle
+        title="网络代理"
+        hint={store.outboundProxyEnabled ? '当前：已启用' : '当前：已关闭'}
+      />
+      <div className="space-y-3">
+        <ToggleRow
+          label="启用出站代理"
+          description="搜索、详情、封面与拉流等由本机 Node 发出的请求将经下方 HTTP 代理转发。适用于 Clash / V2RayN 等；请填 HTTP 端口（常见 7890），不要用 SOCKS。可随时关闭开关恢复直连。"
+          checked={store.outboundProxyEnabled}
+          onChange={(v) => {
+            if (v) void enableProxy(draftUrl);
+            else void disableProxy();
+          }}
+        />
+        <div className="space-y-2">
+          <label className="block text-sm text-content" htmlFor="outbound-proxy-url">
+            代理地址
+          </label>
+          <input
+            id="outbound-proxy-url"
+            className="input w-full"
+            placeholder="http://127.0.0.1:7890"
+            value={draftUrl}
+            disabled={saving}
+            onChange={(e) => setDraftUrl(e.target.value)}
+            onBlur={() => {
+              void saveUrl(draftUrl);
+            }}
+          />
+          <p className="text-xs text-faint">
+            推荐本机回环地址。也可启动时设置环境变量 HTTP_PROXY / LIBRETV_HTTP_PROXY（界面关闭后仍以界面为准，直到重启进程才重新读环境变量）。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          {store.outboundProxyEnabled ? (
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              disabled={saving}
+              onClick={() => {
+                void disableProxy();
+              }}
+            >
+              {saving ? '处理中…' : '关闭代理'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              disabled={saving}
+              onClick={() => {
+                void enableProxy(draftUrl);
+              }}
+            >
+              {saving ? '处理中…' : '启用代理'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            disabled={saving || !store.outboundProxyEnabled}
+            onClick={() => {
+              void saveUrl(draftUrl);
+            }}
+          >
+            保存地址
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            disabled={testing || saving || !store.outboundProxyEnabled}
+            onClick={async () => {
+              setTesting(true);
+              try {
+                await api.outboundProxy.put({
+                  enabled: true,
+                  url: draftUrl.trim() || 'http://127.0.0.1:7890',
+                });
+                const r = await api.outboundProxy.test();
+                if (r.ok) toast(`代理连通正常${r.status ? `（HTTP ${r.status}）` : ''}`, 'success');
+                else toast(r.error || '代理探测失败，请检查 Clash 是否开启允许局域网/系统代理端口', 'error');
+              } catch (e) {
+                toast(e instanceof Error ? e.message : '探测失败', 'error');
+              } finally {
+                setTesting(false);
+              }
+            }}
+          >
+            {testing ? '探测中…' : '测试连通'}
+          </button>
+        </div>
       </div>
     </section>
   );

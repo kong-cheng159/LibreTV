@@ -47,6 +47,13 @@ export interface AppSettings {
   /** 用户是否在设置中主动选择过封面图加载方式；为 false 时部署者的 DEFAULT_IMAGE_MODE 默认值可生效 */
   imageProxyModeTouched: boolean;
   customImageProxy: string;
+  /**
+   * 出站 HTTP(S) 代理：让 Node sidecar 经 Clash 等转发上游请求。
+   * Node 不认 Windows 系统代理，需在此显式开启；实际生效靠同步到服务端 /api/outbound-proxy。
+   */
+  outboundProxyEnabled: boolean;
+  /** 例 http://127.0.0.1:7890（Clash 默认 HTTP 端口） */
+  outboundProxyUrl: string;
 }
 
 /** 一次订阅同步导入的数量（点播 / 直播），用于列表内展示同步结果 */
@@ -386,6 +393,8 @@ export const useAppStore = create<AppState>()(
       imageProxyMode: 'direct',
       imageProxyModeTouched: false,
       customImageProxy: '',
+      outboundProxyEnabled: false,
+      outboundProxyUrl: 'http://127.0.0.1:7890',
 
       addCustomApi: (api) => {
         const list = get().customAPIs;
@@ -933,8 +942,9 @@ export const useAppStore = create<AppState>()(
       //     与旧行为完全一致，因此无需改写存量数据，仅借版本号让 migrate 跑一遍。
       // v9：点播追剧 watchlist。
       // v10：直播上次观看频道 liveLastChannel。
+      // v11：出站 HTTP(S) 代理（outboundProxyEnabled / outboundProxyUrl）。
       // 此前未声明 version 的存量数据会被视为 v0 并走 migrate 补齐。
-      version: 10,
+      version: 11,
       migrate: (persisted, version) => {
         const state = { ...((persisted ?? {}) as Partial<AppState>) };
         if (!Array.isArray(state.liveRecent)) state.liveRecent = [];
@@ -944,6 +954,10 @@ export const useAppStore = create<AppState>()(
         }
         if (!Array.isArray(state.liveSubscriptions)) state.liveSubscriptions = [];
         if (!Array.isArray(state.watchlist)) state.watchlist = [];
+        if (typeof state.outboundProxyEnabled !== 'boolean') state.outboundProxyEnabled = false;
+        if (typeof state.outboundProxyUrl !== 'string' || !state.outboundProxyUrl.trim()) {
+          state.outboundProxyUrl = 'http://127.0.0.1:7890';
+        }
 
         // v3 的片头/片尾双标记 → v4 的 segments（纯函数，脏数据在内部丢弃）
         state.skipMarks = migrateSkipMarks(
@@ -1026,6 +1040,8 @@ export const useAppStore = create<AppState>()(
         imageProxyMode: s.imageProxyMode,
         imageProxyModeTouched: s.imageProxyModeTouched,
         customImageProxy: s.customImageProxy,
+        outboundProxyEnabled: s.outboundProxyEnabled,
+        outboundProxyUrl: s.outboundProxyUrl,
       }),
       // 同步 storage 会在模块加载时立即 rehydrate（早于 React hydration），
       // 一旦首屏渲染依赖持久化状态就会与 SSR 输出不一致。

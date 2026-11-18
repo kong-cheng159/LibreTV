@@ -190,9 +190,11 @@ fs.mkdirSync(path.dirname(out), { recursive: true });
 
 if (!force && fs.existsSync(out) && fs.statSync(out).size > 20_000) {
   console.log(`保留现有设计稿：${out}`);
-  console.log('若要重画程序化底稿，请加 --force；完成后执行：npx tauri icon src-tauri/app-icon.png');
+  console.log('圆角透明遮罩：node scripts/round-app-icon.mjs');
+  console.log('再执行：npx tauri icon src-tauri/app-icon.png');
   process.exit(0);
 }
 
 fs.writeFileSync(out, createPng(1024));
 console.log(out);
+console.log('建议接着执行：node scripts/round-app-icon.mjs && npx tauri icon src-tauri/app-icon.png');

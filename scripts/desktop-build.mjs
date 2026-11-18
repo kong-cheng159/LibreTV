@@ -10,8 +10,38 @@ import { paths, syncDesktopVersion } from './desktop-shared.mjs';
  */
 const APP_OUT_DIR = path.join(paths.ROOT, 'release');
 
-/** Tauri NSIS 默认产物位置 */
-const NSIS_BUNDLE_DIR = path.join(paths.TAURI_DIR, 'target', 'release', 'bundle', 'nsis');
+/** 候选 NSIS 产物目录（Cursor 沙箱可能把 CARGO_TARGET_DIR 指到临时目录） */
+function nsisCandidateDirs() {
+  return [
+    process.env.CARGO_TARGET_DIR
+      ? path.join(process.env.CARGO_TARGET_DIR, 'release', 'bundle', 'nsis')
+      : null,
+    path.join(paths.TAURI_DIR, 'target', 'release', 'bundle', 'nsis'),
+  ].filter(Boolean);
+}
+
+async function resolveNsisBundleDir() {
+  let best = null;
+  let bestMtime = -1;
+  for (const dir of nsisCandidateDirs()) {
+    try {
+      const names = await fs.readdir(dir);
+      const exe = names.find((n) => n.toLowerCase().endsWith('-setup.exe'));
+      if (!exe) continue;
+      const st = await fs.stat(path.join(dir, exe));
+      if (st.mtimeMs > bestMtime) {
+        bestMtime = st.mtimeMs;
+        best = dir;
+      }
+    } catch {
+      /* 目录不存在则跳过 */
+    }
+  }
+  if (!best) {
+    throw new Error(`未找到 NSIS 产物目录，已尝试：\n${nsisCandidateDirs().join('\n')}`);
+  }
+  return best;
+}
 
 function runTauriBuild() {
   const tauriBin = path.join(
@@ -35,39 +65,40 @@ function runTauriBuild() {
   });
 }
 
-/** 把 NSIS setup.exe 拷到根目录 app/，便于直接取安装包 */
+/** 把 NSIS setup.exe / .sig 拷到 release/，便于直接取安装包 */
 async function copyInstallersToAppDir() {
   await fs.mkdir(APP_OUT_DIR, { recursive: true });
-  let entries = [];
-  try {
-    entries = await fs.readdir(NSIS_BUNDLE_DIR);
-  } catch (err) {
-    throw new Error(`未找到 NSIS 产物目录：${NSIS_BUNDLE_DIR}\n${err instanceof Error ? err.message : err}`);
-  }
+  const nsisDir = await resolveNsisBundleDir();
+  const entries = await fs.readdir(nsisDir);
 
   const setups = entries.filter(
     (name) => name.toLowerCase().endsWith('.exe') || name.toLowerCase().endsWith('.sig')
   );
   if (!setups.some((name) => name.toLowerCase().endsWith('.exe'))) {
-    throw new Error(`NSIS 目录里没有 .exe：${NSIS_BUNDLE_DIR}`);
+    throw new Error(`NSIS 目录里没有 .exe：${nsisDir}`);
   }
 
   const copied = [];
   for (const name of setups) {
-    const from = path.join(NSIS_BUNDLE_DIR, name);
+    const from = path.join(nsisDir, name);
     const to = path.join(APP_OUT_DIR, name);
     await fs.copyFile(from, to);
     copied.push(to);
   }
+  console.log(`NSIS 产物来源：${nsisDir}`);
   return copied;
 }
 
 const version = await syncDesktopVersion();
 console.log(`开始构建 LibreTV ${version} 的 Windows 安装包`);
 
-if (!process.env.TAURI_SIGNING_PRIVATE_KEY && !process.env.TAURI_SIGNING_PRIVATE_KEY_PATH) {
+// tauri build 认 TAURI_SIGNING_PRIVATE_KEY（可为私钥原文或文件路径）
+if (!process.env.TAURI_SIGNING_PRIVATE_KEY && process.env.TAURI_SIGNING_PRIVATE_KEY_PATH) {
+  process.env.TAURI_SIGNING_PRIVATE_KEY = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+}
+if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
   console.warn(
-    '未设置 TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PATH：安装包可构建，但不会生成 .sig，应用内更新不可用。'
+    '未设置 TAURI_SIGNING_PRIVATE_KEY（或 PATH）：安装包可构建，但不会生成 .sig，应用内更新不可用。'
   );
   console.warn('详见 src-tauri/keys/README.txt');
 }

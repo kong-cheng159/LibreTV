@@ -3,6 +3,7 @@ import type { LookupAddress } from 'node:dns';
 import { lookup as callbackLookup } from 'node:dns';
 import dns from 'node:dns/promises';
 import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
+import { createOutboundProxyAgent } from './outbound-proxy';
 
 /** 去掉 URL.hostname 对 IPv6 附加的方括号（"[::1]" → "::1"） */
 function stripBrackets(host: string): string {
@@ -240,8 +241,9 @@ export function installFetchSSRFProtection(): void {
       return originalFetch(input, init);
     }
 
-    // 在受保护作用域内，如果未提供专属 dispatcher，自动注入安全专用的 Agent
-    const agent = createSSRFAgent({ allowPrivate: ctx.allowPrivate });
+    // 出站代理开启时走 ProxyAgent（连本地 Clash 等）；否则用 SSRF Agent 直连并拦内网
+    const proxyAgent = createOutboundProxyAgent();
+    const agent = proxyAgent ?? createSSRFAgent({ allowPrivate: ctx.allowPrivate });
     try {
       // input/init 走 undici 自己的重载签名：DOM 的 Request 类型与 undici 的
       // Request 类型在 duplex 上要求不同，直接传会报类型不兼容，这里只是同族对象互转
